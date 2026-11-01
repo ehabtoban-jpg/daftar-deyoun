@@ -1,4 +1,4 @@
-import { arrayUnion, doc, onSnapshot, setDoc } from 'firebase/firestore'
+import { arrayUnion, doc, onSnapshot, runTransaction, setDoc } from 'firebase/firestore
 import { db } from './firebase'
 
 export type LedgerData = {
@@ -82,4 +82,27 @@ export async function saveSharedLedger(
     updatedAt: new Date().toISOString(),
     updatedBy: userId,
   }, { merge: true })
+}
+
+
+// Online edits/deletions use a Firestore transaction so simultaneous changes
+// from the owner and brother cannot silently overwrite each other.
+export async function mutateSharedLedger(
+  mutate: (customers: unknown[], entries: unknown[]) => { customers: unknown[]; entries: unknown[] },
+  userId: string,
+) {
+  await runTransaction(db, async transaction => {
+    const ref = sharedLedgerRef()
+    const snapshot = await transaction.get(ref)
+    const data = snapshot.exists() ? snapshot.data() : {}
+    const currentCustomers = Array.isArray(data.customers) ? data.customers : []
+    const currentEntries = Array.isArray(data.entries) ? data.entries : []
+    const nextData = mutate(currentCustomers, currentEntries)
+    transaction.set(ref, {
+      customers: nextData.customers,
+      entries: nextData.entries,
+      updatedAt: new Date().toISOString(),
+      updatedBy: userId,
+    }, { merge: true })
+  })
 }
