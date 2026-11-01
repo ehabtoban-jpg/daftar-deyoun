@@ -172,8 +172,10 @@ function Dashboard({ user }: { user: User }) {
     setEditBusy(true)
     try {
       await putInTrash({ entityType: 'customer', entity: selectedCustomer, deletedBy: actor }, (cs, es) => {
-        if (es.some(e => e.customerId === selectedCustomer.id)) throw new Error('CUSTOMER_HAS_ENTRIES')
-        return { customers: cs.filter(c => c.id !== selectedCustomer.id), entries: es }
+        const typedCustomers = cs as Customer[]
+        const typedEntries = es as Entry[]
+        if (typedEntries.some(entry => entry.customerId === selectedCustomer.id)) throw new Error('CUSTOMER_HAS_ENTRIES')
+        return { customers: typedCustomers.filter(customer => customer.id !== selectedCustomer.id), entries: typedEntries }
       }, user.uid)
       void logActivity('نقل زبون إلى السلة', 'نقل الزبون ' + selectedCustomer.name + ' إلى سلة المحذوفات', '', selectedCustomer.name)
       setSelected('')
@@ -209,7 +211,7 @@ function Dashboard({ user }: { user: User }) {
     setEditBusy(true)
     try {
       const customerName = customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف'
-      await putInTrash({ entityType: 'entry', entity: target, deletedBy: actor }, (cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }), user.uid)
+      await putInTrash({ entityType: 'entry', entity: target, deletedBy: actor }, (cs, es) => ({ customers: cs as Customer[], entries: (es as Entry[]).filter(entry => entry.id !== id) }), user.uid)
       void logActivity('نقل حركة إلى السلة', 'نقل ' + (target.kind === 'debt' ? 'دين' : 'دفعة') + ' بقيمة ' + money(target.amount, target.currency) + ' إلى السلة', target.note, customerName)
       setSyncStatus('تم نقل الحركة إلى سلة المحذوفات')
     } catch { window.alert('تعذر نقل الحركة إلى سلة المحذوفات.') }
