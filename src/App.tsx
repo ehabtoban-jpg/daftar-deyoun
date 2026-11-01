@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive } from 'lucide-react'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -34,6 +34,36 @@ function Dashboard({ user }: { user: User }) {
   const [activities, setActivities] = useState<ActivityEvent[]>([])
   const [showTrash, setShowTrash] = useState(false)
   const [trashItems, setTrashItems] = useState<TrashRecord[]>([])
+  const [backupBusy, setBackupBusy] = useState(false)
+  const backupInput = useRef<HTMLInputElement>(null)
+  const downloadBackup = async () => {
+    setBackupBusy(true)
+    try {
+      const backup = await exportLedgerBackup()
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `daftar-deyoun-backup-${new Date().toISOString().slice(0,10)}.json`
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
+      setSyncStatus('تم تنزيل النسخة الاحتياطية')
+    } catch { window.alert('تعذر إنشاء النسخة الاحتياطية. تحقق من اتصال الإنترنت وحاول مجدداً.') }
+    finally { setBackupBusy(false) }
+  }
+  const importBackup = async (file?: File) => {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.json')) { window.alert('اختر ملف نسخة احتياطية بامتداد JSON.'); return }
+    if (!window.confirm('تحذير: ستُستبدل قائمة الزبائن والحركات المالية الحالية بمحتويات النسخة الاحتياطية. هل تريد المتابعة؟')) { if (backupInput.current) backupInput.current.value = ''; return }
+    setBackupBusy(true)
+    try {
+      const backup = JSON.parse(await file.text())
+      await restoreLedgerBackup(backup, user.uid)
+      setSyncStatus('تمت استعادة النسخة الاحتياطية؛ جارٍ تحديث الدفتر')
+      window.alert('تمت الاستعادة بنجاح. انتظر لحظات حتى تظهر البيانات المحدثة.')
+    } catch (error) {
+      window.alert(error instanceof Error && error.message === 'INVALID_BACKUP' ? 'الملف ليس نسخة احتياطية صالحة من دفتر الديون.' : 'تعذرت استعادة النسخة. لم يتم اعتماد الملف.')
+    } finally { setBackupBusy(false); if (backupInput.current) backupInput.current.value = '' }
+  }
   const refreshActivity = async () => { try { setActivities(await listActivity()) } catch { setSyncStatus('تعذر تحميل سجل النشاطات') } }
   const refreshTrash = async () => { try { setTrashItems(await listTrash()) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
@@ -254,7 +284,7 @@ function Dashboard({ user }: { user: User }) {
       <article className="stat"><span className="stat-icon green"><Wallet size={20}/></span><p>إجمالي الديون بالليرة</p><strong>{money(totals.syp,'SYP')}</strong></article>
       <article className="stat"><span className="stat-icon amber"><Users size={20}/></span><p>الزبائن عليهم رصيد</p><strong>{balances.filter(c => c.usd > 0 || c.syp > 0).length}</strong></article>
     </section>
-    <section className="actions"><button className="outline" onClick={() => { setShowActivity(true); setShowTrash(false); void refreshActivity() }}>سجل النشاطات</button><button className="outline" onClick={() => { setShowTrash(true); setShowActivity(false); void refreshTrash() }}><Archive size={16}/> سلة المحذوفات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
+    <section className="actions"><button className="outline" disabled={backupBusy} onClick={() => void downloadBackup()}><Download size={16}/> تنزيل نسخة احتياطية</button><button className="outline" disabled={backupBusy} onClick={() => backupInput.current?.click()}><Upload size={16}/> استعادة نسخة</button><input ref={backupInput} type="file" accept=".json,application/json" hidden onChange={e => void importBackup(e.target.files?.[0])}/><button className="outline" onClick={() => { setShowActivity(true); setShowTrash(false); void refreshActivity() }}>سجل النشاطات</button><button className="outline" onClick={() => { setShowTrash(true); setShowActivity(false); void refreshTrash() }}><Archive size={16}/> سلة المحذوفات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
     <section className="panel"><div className="panel-head"><div><h3>الزبائن</h3><p>كل حساباتك في قائمة واحدة</p></div><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>الكل</button><button className={filter==='owing'?'active':''} onClick={()=>setFilter('owing')}>عليهم ديون</button></div></div>
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>{if(!modal)setSelected(c.id)}} disabled={modal !== null}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
