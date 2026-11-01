@@ -108,12 +108,12 @@ export async function restoreLedgerBackup(backup: any, userId: string) {
     if (item.id.startsWith('activity-') || item.id.startsWith('trash-')) operations.push({ ref: item.ref })
   }
   for (const item of backup.activities) {
-    if (!item || typeof item.id !== 'string' || !item.id.startsWith('activity-')) throw new Error('INVALID_BACKUP')
-    operations.push({ ref: doc(db, 'shops', shop, 'data', item.id), data: { ...item, type: 'activity' } })
+    if (!item || typeof item.id !== 'string' || !item.id) throw new Error('INVALID_BACKUP')
+    operations.push({ ref: doc(db, 'shops', shop, 'data', `activity-${item.id}`), data: { ...item, type: 'activity' } })
   }
   for (const item of backup.trash) {
-    if (!item || typeof item.id !== 'string' || !item.id.startsWith('trash-')) throw new Error('INVALID_BACKUP')
-    operations.push({ ref: doc(db, 'shops', shop, 'data', item.id), data: item })
+    if (!item || typeof item.id !== 'string' || !item.id) throw new Error('INVALID_BACKUP')
+    operations.push({ ref: doc(db, 'shops', shop, 'data', `trash-${item.id}`), data: item })
   }
   await saveSharedLedger(backup.customers, backup.entries, userId)
   for (let i = 0; i < operations.length; i += 450) {
