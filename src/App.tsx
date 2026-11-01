@@ -341,7 +341,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
   const sendWhatsAppReminder = () => {
     if (!selectedCustomer) return
     const rawPhone = selectedCustomer.phone.trim()
-    let phoneDigits = rawPhone.replace(/\\D/g, '')
+    let phoneDigits = rawPhone.replace(/\D/g, '')
     if (rawPhone.startsWith('00')) phoneDigits = phoneDigits.slice(2)
     else if (!rawPhone.startsWith('+')) {
       window.alert('اكتب رقم الهاتف مع مفتاح الدولة أولاً، مثل +90 أو +963، ثم جرّب إرسال التذكير.')
@@ -440,7 +440,7 @@ function PinSettings({ onClose, onPinStateChange }: { onClose: () => void; onPin
       if (action === 'disable') {
         localStorage.removeItem(DEVICE_PIN_KEY); onPinStateChange(false); onClose(); return
       }
-      if (!/^\\d{4,8}$/.test(newPin)) { setError('استخدم رمزاً جديداً من 4 إلى 8 أرقام.'); return }
+      if (!/^\d{4,8}$/.test(newPin)) { setError('استخدم رمزاً جديداً من 4 إلى 8 أرقام.'); return }
       if (newPin !== confirmPin) { setError('الرمزان الجديدان غير متطابقين.'); return }
       const salt = crypto.getRandomValues(new Uint8Array(16))
       const hash = await derivePinHash(newPin, salt)
@@ -453,8 +453,8 @@ function PinSettings({ onClose, onPinStateChange }: { onClose: () => void; onPin
   return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><section className="dialog">
     <button className="close" onClick={onClose}><X/></button><h3>إعدادات قفل هذا الجهاز</h3><p>هذا الإعداد محلي ولا يؤثر على قفل أجهزتك الأخرى.</p>
     <div className="actions"><button type="button" className={action === 'change' ? 'primary' : 'outline'} onClick={() => {setAction('change');setError('')}}>تغيير PIN</button><button type="button" className={action === 'disable' ? 'primary' : 'outline'} onClick={() => {setAction('disable');setError('')}}>إلغاء القفل</button></div>
-    <form onSubmit={submit}><label>رمز PIN الحالي<input type="password" inputMode="numeric" maxLength={8} required value={currentPin} onChange={e=>setCurrentPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label>
-    {action === 'change' && <><label>رمز PIN الجديد<input type="password" inputMode="numeric" maxLength={8} required value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label><label>تأكيد الرمز الجديد<input type="password" inputMode="numeric" maxLength={8} required value={confirmPin} onChange={e=>setConfirmPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label></>}
+    <form onSubmit={submit}><label>رمز PIN الحالي<input type="password" inputMode="numeric" maxLength={8} required value={currentPin} onChange={e=>setCurrentPin(e.target.value.replace(/\D/g,'').slice(0,8))}/></label>
+    {action === 'change' && <><label>رمز PIN الجديد<input type="password" inputMode="numeric" maxLength={8} required value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,'').slice(0,8))}/></label><label>تأكيد الرمز الجديد<input type="password" inputMode="numeric" maxLength={8} required value={confirmPin} onChange={e=>setConfirmPin(e.target.value.replace(/\D/g,'').slice(0,8))}/></label></>}
     {error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy ? 'جارٍ الحفظ…' : action === 'change' ? 'حفظ الرمز الجديد' : 'إلغاء القفل على هذا الجهاز'}</button></form>
     {action === 'disable' && <p className="form-error">سيصبح فتح الدفتر على هذا الجهاز دون PIN بعد التأكيد.</p>}
   </section></div>
