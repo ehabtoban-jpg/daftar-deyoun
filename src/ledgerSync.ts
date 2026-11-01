@@ -49,6 +49,7 @@ export async function updateSharedEntity(
   expected: unknown,
   replacement: unknown,
   userId: string,
+  forceFields: string[] = [],
 ) {
   await runTransaction(db, async transaction => {
     const ref = sharedLedgerRef()
@@ -73,7 +74,8 @@ export async function updateSharedEntity(
     for (const key of changedKeys) {
       if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue
       // Another device changed the same field: preserve its value and stop.
-      if (JSON.stringify(current[key]) !== JSON.stringify(before[key]) &&
+      if (!forceFields.includes(key) &&
+          JSON.stringify(current[key]) !== JSON.stringify(before[key]) &&
           JSON.stringify(current[key]) !== JSON.stringify(after[key])) {
         throw new Error(`ENTITY_CONFLICT:${key}`)
       }
