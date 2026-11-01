@@ -32,8 +32,26 @@ function Dashboard({ user }: { user: User }) {
 
   useEffect(() => {
     let active = true
+    const markOffline = () => {
+      if (!active) return
+      setSyncReady(false)
+      setSyncStatus('غير متصل بالإنترنت')
+    }
+    const markOnline = () => {
+      if (!active) return
+      setSyncReady(false)
+      setSyncStatus('عاد الإنترنت، جارٍ التحقق من المزامنة…')
+    }
+    window.addEventListener('offline', markOffline)
+    window.addEventListener('online', markOnline)
+    if (!navigator.onLine) markOffline()
+
     const unsubscribe = watchSharedLedger(data => {
       if (!active) return
+      if (!navigator.onLine) {
+        markOffline()
+        return
+      }
       if (data) {
         setCustomers(data.customers as Customer[])
         setEntries(data.entries as Entry[])
@@ -51,16 +69,24 @@ function Dashboard({ user }: { user: User }) {
           setSyncReady(true)
           setSyncStatus('تم رفع البيانات المحلية إلى السحابة')
         }).catch(() => {
-          if (active) setSyncStatus('تعذر إنشاء الدفتر السحابي')
+          if (active) {
+            setSyncReady(false)
+            setSyncStatus(navigator.onLine ? 'تعذر إنشاء الدفتر السحابي' : 'غير متصل بالإنترنت')
+          }
         })
       }
     }, () => {
       if (active) {
         setSyncReady(false)
-        setSyncStatus('فشل الاتصال بالسحابة')
+        setSyncStatus(navigator.onLine ? 'فشل الاتصال بالسحابة' : 'غير متصل بالإنترنت')
       }
     })
-    return () => { active = false; unsubscribe() }
+    return () => {
+      active = false
+      window.removeEventListener('offline', markOffline)
+      window.removeEventListener('online', markOnline)
+      unsubscribe()
+    }
   }, [user.uid])
 
   const persistCustomers = (v: Customer[]) => {
