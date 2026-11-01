@@ -41,6 +41,29 @@ export async function mutateSharedLedger(mutate: (customers: unknown[], entries:
   })
 }
 
+
+export async function updateSharedEntity(
+  entityType: 'customer' | 'entry',
+  id: string,
+  expected: unknown,
+  replacement: unknown,
+  userId: string,
+) {
+  await runTransaction(db, async transaction => {
+    const ref = sharedLedgerRef()
+    const snapshot = await transaction.get(ref)
+    if (!snapshot.exists()) throw new Error('LEDGER_NOT_FOUND')
+    const data = snapshot.data()
+    const field = entityType === 'customer' ? 'customers' : 'entries'
+    const rows = Array.isArray(data[field]) ? [...data[field]] : []
+    const index = rows.findIndex((row: any) => row?.id === id)
+    if (index < 0) throw new Error('ENTITY_NOT_FOUND')
+    if (JSON.stringify(rows[index]) !== JSON.stringify(expected)) throw new Error('ENTITY_CONFLICT')
+    rows[index] = replacement
+    transaction.update(ref, { [field]: rows, updatedAt: new Date().toISOString(), updatedBy: userId })
+  })
+}
+
 export async function recordActivity(event: Omit<ActivityEvent, 'id'>) {
   const id = crypto.randomUUID()
   await setDoc(eventRef(id), { ...event, id, type: 'activity' })
