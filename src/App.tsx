@@ -27,19 +27,16 @@ function Dashboard({ user }: { user: User }) {
   const [note, setNote] = useState('')
   const [filter, setFilter] = useState<'all' | 'owing'>('all')
   const [entryError, setEntryError] = useState('')
-  const [syncReady, setSyncReady] = useState(false)
   const [syncStatus, setSyncStatus] = useState('جارٍ الاتصال بالسحابة…')
 
   useEffect(() => {
     let active = true
     const markOffline = () => {
       if (!active) return
-      setSyncReady(false)
       setSyncStatus('غير متصل بالإنترنت')
     }
     const markOnline = () => {
       if (!active) return
-      setSyncReady(false)
       setSyncStatus('عاد الإنترنت، جارٍ التحقق من المزامنة…')
     }
     window.addEventListener('offline', markOffline)
@@ -57,7 +54,6 @@ function Dashboard({ user }: { user: User }) {
         setEntries(data.entries as Entry[])
         localStorage.setItem('dd-customers', JSON.stringify(data.customers))
         localStorage.setItem('dd-entries', JSON.stringify(data.entries))
-        setSyncReady(true)
         setSyncStatus('متصل ومتزامن')
       } else {
         const localCustomers = load<Customer[]>('dd-customers', [])
@@ -66,18 +62,15 @@ function Dashboard({ user }: { user: User }) {
           if (!active) return
           setCustomers(localCustomers)
           setEntries(localEntries)
-          setSyncReady(true)
           setSyncStatus('تم رفع البيانات المحلية إلى السحابة')
         }).catch(() => {
           if (active) {
-            setSyncReady(false)
             setSyncStatus(navigator.onLine ? 'تعذر إنشاء الدفتر السحابي' : 'غير متصل بالإنترنت')
           }
         })
       }
     }, () => {
       if (active) {
-        setSyncReady(false)
         setSyncStatus(navigator.onLine ? 'فشل الاتصال بالسحابة' : 'غير متصل بالإنترنت')
       }
     })
