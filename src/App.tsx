@@ -284,7 +284,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     setEditBusy(true)
     try {
       if (navigator.onLine) {
-        await updateSharedEntity(entityType, replacement.id, editingOriginal, replacement, user.uid)
+        await updateSharedEntity(operation.id, entityType, replacement.id, editingOriginal, replacement, user.uid)
         setSyncStatus('تم حفظ التعديل ومزامنته')
       } else {
         enqueueEntityUpdate(operation)
