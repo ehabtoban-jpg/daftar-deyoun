@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -12,6 +12,13 @@ const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumF
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
 type PendingLedgerWrite = { id: string; type: 'customer' | 'entry'; value: Customer | Entry; userId: string }
+type PendingEntityUpdate = { id: string; entityType: 'customer' | 'entry'; entityId: string; expected: Customer | Entry; replacement: Customer | Entry; userId: string }
+const PENDING_UPDATES_KEY = 'dd-pending-entity-updates-v1'
+const readPendingUpdates = (): PendingEntityUpdate[] => load<PendingEntityUpdate[]>(PENDING_UPDATES_KEY, [])
+const enqueueEntityUpdate = (operation: PendingEntityUpdate) => {
+  const queue = readPendingUpdates()
+  if (!queue.some(item => item.id === operation.id)) localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify([...queue, operation]))
+}
 const PENDING_WRITES_KEY = 'dd-pending-ledger-writes-v1'
 const readPendingWrites = (): PendingLedgerWrite[] => load<PendingLedgerWrite[]>(PENDING_WRITES_KEY, [])
 const enqueueLedgerWrite = (write: PendingLedgerWrite) => {
@@ -29,6 +36,14 @@ async function flushPendingLedgerWrites() {
     localStorage.setItem(PENDING_WRITES_KEY, JSON.stringify(latest))
   }
 }
+async function flushPendingEntityUpdates() {
+  if (!navigator.onLine) return
+  for (const item of readPendingUpdates()) {
+    if (!navigator.onLine) return
+    await updateSharedEntity(item.entityType, item.entityId, item.expected, item.replacement, item.userId)
+    localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => write.id !== item.id)))
+  }
+}
 
 function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (enabled: boolean) => void }) {
   const [customers, setCustomers] = useState<Customer[]>(() => load('dd-customers', []))
@@ -37,6 +52,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
   const [query, setQuery] = useState('')
   const [modal, setModal] = useState<'customer' | 'entry' | 'editCustomer' | 'editEntry' | null>(null)
   const [editingId, setEditingId] = useState('')
+  const [editingOriginal, setEditingOriginal] = useState<Customer | Entry | null>(null)
   const [editBusy, setEditBusy] = useState(false)
   const [selected, setSelected] = useState('')
   const [entryCustomerId, setEntryCustomerId] = useState('')
@@ -145,7 +161,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const markOnline = () => {
       if (!active) return
       setSyncStatus('عاد الإنترنت، جارٍ مزامنة العمليات المعلّقة…')
-      void flushPendingLedgerWrites().then(() => {
+      void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => {
         if (active) setSyncStatus('تمت مزامنة الإضافات المعلّقة؛ جارٍ تحديث الدفتر')
       }).catch(() => {
         if (active) setSyncStatus('تعذرت مزامنة بعض الإضافات؛ ستبقى محفوظة لإعادة المحاولة')
@@ -154,6 +170,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     window.addEventListener('offline', markOffline)
     window.addEventListener('online', markOnline)
     if (!navigator.onLine) markOffline()
+    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).catch(() => setSyncStatus('هناك عمليات تعديل معلّقة أو متعارضة؛ لم تُستبدل بيانات السحابة'))
 
     const applyLocalLedger = (localCustomers: Customer[], localEntries: Entry[]) => {
       setCustomers(localCustomers)
@@ -261,32 +278,40 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     setAmount(''); setNote(''); setEntryError(''); setModal(null)
     setReminderOffer(savedEntry)
   }
-  const runLedgerMutation = async (mutate: (cs: Customer[], es: Entry[]) => { customers: Customer[]; entries: Entry[] }) => {
-    if (!navigator.onLine) { window.alert('التعديل والحذف يحتاجان اتصالاً بالإنترنت.'); return false }
+  const runEntityUpdate = async (entityType: 'customer' | 'entry', replacement: Customer | Entry) => {
+    if (!editingOriginal || editingOriginal.id !== replacement.id) return false
+    const operation: PendingEntityUpdate = { id: crypto.randomUUID(), entityType, entityId: replacement.id, expected: editingOriginal, replacement, userId: user.uid }
     setEditBusy(true)
     try {
-      const next = await mutateSharedLedger((cs, es) => mutate(cs as Customer[], es as Entry[]), user.uid)
-      void next
-      // Read the committed state through the live Firestore listener.
-      setSyncStatus('تم حفظ التعديل ومزامنته')
+      if (navigator.onLine) {
+        await updateSharedEntity(entityType, replacement.id, editingOriginal, replacement, user.uid)
+        setSyncStatus('تم حفظ التعديل ومزامنته')
+      } else {
+        enqueueEntityUpdate(operation)
+        const nextCustomers = entityType === 'customer' ? customers.map(item => item.id === replacement.id ? replacement as Customer : item) : customers
+        const nextEntries = entityType === 'entry' ? entries.map(item => item.id === replacement.id ? replacement as Entry : item) : entries
+        setCustomers(nextCustomers); setEntries(nextEntries)
+        localStorage.setItem('dd-customers', JSON.stringify(nextCustomers))
+        localStorage.setItem('dd-entries', JSON.stringify(nextEntries))
+        setSyncStatus('حُفظ التعديل على هذا الجهاز؛ ينتظر التحقق والمزامنة عند عودة الإنترنت')
+      }
       return true
-    } catch {
-      setSyncStatus('تعذر حفظ التعديل؛ لم تتغير البيانات')
-      window.alert('تعذر حفظ التغيير. تحقق من الاتصال وحاول مرة أخرى.')
+    } catch (error) {
+      setSyncStatus('لم يُحفظ التعديل بسبب تعارض أو مشكلة اتصال')
+      window.alert(error instanceof Error && error.message === 'ENTITY_CONFLICT' ? 'هذا السجل تغيّر على الجهاز الآخر. لم نعتمد تعديلك؛ حدّث البيانات وافتح التعديل من جديد.' : 'تعذر حفظ التغيير. لم نعتمد التعديل.')
       return false
     } finally { setEditBusy(false) }
   }
   const openCustomerEdit = () => {
     if (!selectedCustomer) return
-    setEditingId(selectedCustomer.id); setName(selectedCustomer.name); setPhone(selectedCustomer.phone)
+    setEditingId(selectedCustomer.id); setEditingOriginal({ ...selectedCustomer }); setName(selectedCustomer.name); setPhone(selectedCustomer.phone)
     setSelected(''); setModal('editCustomer')
   }
   const saveCustomerEdit = async () => {
-    const ok = await runLedgerMutation((cs, es) => ({
-      customers: cs.map(c => c.id === editingId ? { ...c, name: name.trim(), phone: phone.trim() } : c),
-      entries: es,
-    }))
-    if (ok) { void logActivity('تعديل زبون', `تعديل بيانات الزبون ${name.trim()}`); setModal(null); setName(''); setPhone('') }
+    if (!editingOriginal || !('name' in editingOriginal)) return
+    const replacement: Customer = { ...editingOriginal, name: name.trim(), phone: phone.trim() }
+    const ok = await runEntityUpdate('customer', replacement)
+    if (ok) { void logActivity('تعديل زبون', `تعديل بيانات الزبون ${name.trim()}`); setModal(null); setName(''); setPhone(''); setEditingOriginal(null) }
   }
   const deleteCustomer = async () => {
     if (!selectedCustomer) return
@@ -312,7 +337,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     } finally { setEditBusy(false) }
   }
   const openEntryEdit = (entry: Entry) => {
-    setEditingId(entry.id); setKind(entry.kind); setAmount(String(entry.amount)); setCurrency(entry.currency); setNote(entry.note)
+    setEditingId(entry.id); setEditingOriginal({ ...entry }); setKind(entry.kind); setAmount(String(entry.amount)); setCurrency(entry.currency); setNote(entry.note)
     setSelected(''); setModal('editEntry')
   }
   const saveEntryEdit = async () => {
@@ -324,11 +349,10 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       window.alert(resultingBalance < 0 ? 'لا يمكن أن تصبح الدفعات أكبر من مجموع الديون.' : 'أدخل مبلغاً صحيحاً أكبر من صفر.')
       return
     }
-    const ok = await runLedgerMutation((cs, es) => ({
-      customers: cs,
-      entries: es.map(e => e.id === editingId ? { ...e, kind, amount: n, currency, note: note.trim() } : e),
-    }))
-    if (ok) { const edited = entries.find(e => e.id === editingId); void logActivity('تعديل حركة', `تعديل ${kind === 'debt' ? 'دين' : 'دفعة'} بمبلغ ${money(n, currency)}`, note.trim(), customers.find(c => c.id === edited?.customerId)?.name || 'زبون غير معروف'); setModal(null); setAmount(''); setNote('') }
+    if (!editingOriginal || !('customerId' in editingOriginal)) return
+    const replacement: Entry = { ...editingOriginal, kind, amount: n, currency, note: note.trim() }
+    const ok = await runEntityUpdate('entry', replacement)
+    if (ok) { const edited = editingOriginal; void logActivity('تعديل حركة', `تعديل ${kind === 'debt' ? 'دين' : 'دفعة'} بمبلغ ${money(n, currency)}`, note.trim(), customers.find(c => c.id === edited.customerId)?.name || 'زبون غير معروف'); setModal(null); setAmount(''); setNote(''); setEditingOriginal(null) }
   }
   const deleteEntry = async (id: string) => {
     if (!window.confirm('هل تريد حذف هذه الحركة؟ سيتم تحديث الرصيد تلقائياً.')) return
