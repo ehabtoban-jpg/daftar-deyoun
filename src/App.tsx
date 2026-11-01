@@ -518,6 +518,26 @@ export default function App() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // Keep dialogs and their action buttons above the mobile on-screen keyboard.
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+    const updateKeyboardInset = () => {
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+      document.documentElement.style.setProperty('--keyboard-inset', `${inset}px`)
+    }
+    updateKeyboardInset()
+    viewport.addEventListener('resize', updateKeyboardInset)
+    viewport.addEventListener('scroll', updateKeyboardInset)
+    window.addEventListener('resize', updateKeyboardInset)
+    return () => {
+      viewport.removeEventListener('resize', updateKeyboardInset)
+      viewport.removeEventListener('scroll', updateKeyboardInset)
+      window.removeEventListener('resize', updateKeyboardInset)
+      document.documentElement.style.removeProperty('--keyboard-inset')
+    }
+  }, [])
+
   useEffect(() => onAuthStateChanged(auth, value => {
     setUser(value)
     setUnlocked(false)
