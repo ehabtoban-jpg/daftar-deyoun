@@ -173,8 +173,23 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).catch(() => setSyncStatus('هناك عمليات تعديل معلّقة أو متعارضة؛ لم تُستبدل بيانات السحابة'))
 
     const applyLocalLedger = (localCustomers: Customer[], localEntries: Entry[]) => {
-      setCustomers(localCustomers)
-      setEntries(localEntries)
+      // Keep queued offline edits visible when an older Firestore snapshot arrives.
+      const pending = readPendingUpdates()
+      const mergedCustomers = [...localCustomers]
+      const mergedEntries = [...localEntries]
+      for (const item of pending) {
+        if (item.entityType === 'customer') {
+          const index = mergedCustomers.findIndex(row => row.id === item.entityId)
+          if (index >= 0) mergedCustomers[index] = item.replacement as Customer
+        } else {
+          const index = mergedEntries.findIndex(row => row.id === item.entityId)
+          if (index >= 0) mergedEntries[index] = item.replacement as Entry
+        }
+      }
+      setCustomers(mergedCustomers)
+      setEntries(mergedEntries)
+      localStorage.setItem('dd-customers', JSON.stringify(mergedCustomers))
+      localStorage.setItem('dd-entries', JSON.stringify(mergedEntries))
     }
 
     const unsubscribe = watchSharedLedger(data => {
