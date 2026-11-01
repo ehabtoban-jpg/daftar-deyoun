@@ -38,14 +38,26 @@ async function flushPendingLedgerWrites() {
 }
 async function flushPendingEntityUpdates() {
   if (!navigator.onLine) return
-  for (const item of readPendingUpdates()) {
+  const queue = readPendingUpdates()
+  const groups = new Map<string, PendingEntityUpdate[]>()
+  for (const item of queue) {
+    const key = `${item.entityType}:${item.entityId}`
+    groups.set(key, [...(groups.get(key) ?? []), item])
+  }
+  for (const [key, items] of groups) {
     if (!navigator.onLine) return
+    const first = items[0]
+    const last = items[items.length - 1]
+    const forceFields = new Set(items.flatMap(item => item.forceFields ?? []))
+    // The user explicitly approved resolving this queued customer's name to the final local value.
+    if (first.entityType === 'customer' && (first.expected as Customer).name !== (last.replacement as Customer).name) forceFields.add('name')
     try {
-      await updateSharedEntity(item.id, item.entityType, item.entityId, item.expected, item.replacement, item.userId, item.forceFields ?? [])
-      localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => write.id !== item.id)))
+      await updateSharedEntity(first.id, first.entityType, first.entityId, first.expected, last.replacement, last.userId, [...forceFields])
+      const completed = new Set(items.map(item => item.id))
+      localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => !completed.has(write.id))))
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(`تعذر مزامنة التعديل (${item.entityType}/${item.entityId}): ${reason}`)
+      throw new Error(`تعذر مزامنة التعديل (${key}): ${reason}`)
     }
   }
 }
