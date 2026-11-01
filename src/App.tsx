@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrash, putInTrashWithId, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -12,6 +12,30 @@ const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumF
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
 type PendingLedgerWrite = { id: string; type: 'customer' | 'entry'; value: Customer | Entry; userId: string }
+type PendingTrashDelete = { record: TrashRecord; userId: string }
+const PENDING_TRASH_DELETES_KEY = 'dd-pending-trash-deletes-v1'
+const readPendingTrashDeletes = (): PendingTrashDelete[] => load<PendingTrashDelete[]>(PENDING_TRASH_DELETES_KEY, [])
+const enqueuePendingTrashDelete = (item: PendingTrashDelete) => {
+  const queue = readPendingTrashDeletes()
+  if (!queue.some(row => row.record.id === item.record.id)) localStorage.setItem(PENDING_TRASH_DELETES_KEY, JSON.stringify([...queue, item]))
+}
+async function flushPendingTrashDeletes() {
+  if (!navigator.onLine) return
+  for (const item of readPendingTrashDeletes()) {
+    if (!navigator.onLine) return
+    const { record, userId } = item
+    await putInTrashWithId(record.id, { entityType: record.entityType, entity: record.entity, deletedBy: record.deletedBy }, (cs, es) => {
+      const customers = cs as Customer[]
+      const entries = es as Entry[]
+      if (record.entityType === 'customer') {
+        if (entries.some(entry => entry.customerId === record.entity.id)) throw new Error('CUSTOMER_HAS_ENTRIES')
+        return { customers: customers.filter(customer => customer.id !== record.entity.id), entries }
+      }
+      return { customers, entries: entries.filter(entry => entry.id !== record.entity.id) }
+    }, userId, record.deletedAt, record.expiresAt)
+    localStorage.setItem(PENDING_TRASH_DELETES_KEY, JSON.stringify(readPendingTrashDeletes().filter(row => row.record.id !== record.id)))
+  }
+}
 type PendingEntityUpdate = { id: string; entityType: 'customer' | 'entry'; entityId: string; expected: Customer | Entry; replacement: Customer | Entry; userId: string; forceFields?: string[] }
 const PENDING_UPDATES_KEY = 'dd-pending-entity-updates-v1'
 const readPendingUpdates = (): PendingEntityUpdate[] => load<PendingEntityUpdate[]>(PENDING_UPDATES_KEY, [])
@@ -161,7 +185,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       window.alert('تعذر إكمال الاستيراد. تحقق من اتصال الإنترنت وصلاحية جهات الاتصال ثم حاول مجدداً.')
     } finally { setContactsBusy(false) }
   }
-  const refreshTrash = async () => { try { setTrashItems(await listTrash()) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
+  const refreshTrash = async () => { try { const cloud = await listTrash(); const pending = readPendingTrashDeletes().map(item => item.record); const merged = new Map([...cloud, ...pending].map(item => [item.id, item])); setTrashItems([...merged.values()].sort((a,b) => b.deletedAt.localeCompare(a.deletedAt))) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
 
   useEffect(() => {
@@ -178,7 +202,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const markOnline = () => {
       if (!active) return
       setSyncStatus('عاد الإنترنت، جارٍ مزامنة العمليات المعلّقة…')
-      void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => {
+      void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).then(() => {
         if (active) setSyncStatus('تمت مزامنة الإضافات المعلّقة؛ جارٍ تحديث الدفتر')
       }).catch(error => {
         const reason = error instanceof Error ? error.message : String(error)
@@ -188,7 +212,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     window.addEventListener('offline', markOffline)
     window.addEventListener('online', markOnline)
     if (!navigator.onLine) markOffline()
-    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).catch(error => {
+    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).catch(error => {
       const reason = error instanceof Error ? error.message : String(error)
       setSyncStatus(`فشلت مزامنة التعديلات: ${reason}`)
     })
@@ -359,20 +383,25 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       return
     }
     if (!window.confirm('نقل هذا الزبون إلى سلة المحذوفات لمدة 10 أيام؟')) return
-    if (!navigator.onLine) { window.alert('سلة المحذوفات تحتاج اتصالاً بالإنترنت.'); return }
     setEditBusy(true)
+    const target = selectedCustomer
+    const now = new Date()
+    const record: TrashRecord = { id: crypto.randomUUID(), entityType: 'customer', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
     try {
-      await putInTrash({ entityType: 'customer', entity: selectedCustomer, deletedBy: actor }, (cs, es) => {
-        const typedCustomers = cs as Customer[]
-        const typedEntries = es as Entry[]
-        if (typedEntries.some(entry => entry.customerId === selectedCustomer.id)) throw new Error('CUSTOMER_HAS_ENTRIES')
-        return { customers: typedCustomers.filter(customer => customer.id !== selectedCustomer.id), entries: typedEntries }
-      }, user.uid)
-      void logActivity('نقل زبون إلى السلة', 'نقل الزبون ' + selectedCustomer.name + ' إلى سلة المحذوفات', '', selectedCustomer.name)
-      setSelected('')
-      setSyncStatus('تم نقل الزبون إلى سلة المحذوفات')
-    } catch {
-      window.alert('تعذر نقل الزبون. إذا كان لديه حركات مالية، لا يمكن نقله حالياً.')
+      enqueuePendingTrashDelete({ record, userId: user.uid })
+      const nextCustomers = customers.filter(customer => customer.id !== target.id)
+      setCustomers(nextCustomers); localStorage.setItem('dd-customers', JSON.stringify(nextCustomers)); setSelected('')
+      await refreshTrash()
+      if (navigator.onLine) await flushPendingTrashDeletes()
+      void logActivity('نقل زبون إلى السلة', 'نقل الزبون ' + target.name + ' إلى سلة المحذوفات', '', target.name)
+      setSyncStatus(navigator.onLine ? 'تم نقل الزبون إلى سلة المحذوفات' : 'حُفظ الحذف محلياً؛ ستتم مزامنته عند عودة الإنترنت')
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (reason.includes('CUSTOMER_HAS_ENTRIES')) {
+        localStorage.setItem(PENDING_TRASH_DELETES_KEY, JSON.stringify(readPendingTrashDeletes().filter(row => row.record.id !== record.id)))
+        setCustomers(customers); localStorage.setItem('dd-customers', JSON.stringify(customers))
+        window.alert('لا يمكن حذف الزبون لأن لديه حركات مالية على الجهاز الآخر.')
+      } else setSyncStatus('الحذف محفوظ محلياً؛ تعذرت المزامنة وستُعاد المحاولة عند الاتصال')
     } finally { setEditBusy(false) }
   }
   const openEntryEdit = (entry: Entry) => {
@@ -397,14 +426,19 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     if (!window.confirm('هل تريد حذف هذه الحركة؟ سيتم تحديث الرصيد تلقائياً.')) return
     const target = entries.find(e => e.id === id)
     if (!target) return
-    if (!navigator.onLine) { window.alert('سلة المحذوفات تحتاج اتصالاً بالإنترنت.'); return }
     setEditBusy(true)
+    const customerName = customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف'
+    const now = new Date()
+    const record: TrashRecord = { id: crypto.randomUUID(), entityType: 'entry', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
     try {
-      const customerName = customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف'
-      await putInTrash({ entityType: 'entry', entity: target, deletedBy: actor }, (cs, es) => ({ customers: cs as Customer[], entries: (es as Entry[]).filter(entry => entry.id !== id) }), user.uid)
+      enqueuePendingTrashDelete({ record, userId: user.uid })
+      const nextEntries = entries.filter(entry => entry.id !== id)
+      setEntries(nextEntries); localStorage.setItem('dd-entries', JSON.stringify(nextEntries))
+      await refreshTrash()
+      if (navigator.onLine) await flushPendingTrashDeletes()
       void logActivity('نقل حركة إلى السلة', 'نقل ' + (target.kind === 'debt' ? 'دين' : 'دفعة') + ' بقيمة ' + money(target.amount, target.currency) + ' إلى السلة', target.note, customerName)
-      setSyncStatus('تم نقل الحركة إلى سلة المحذوفات')
-    } catch { window.alert('تعذر نقل الحركة إلى سلة المحذوفات.') }
+      setSyncStatus(navigator.onLine ? 'تم نقل الحركة إلى سلة المحذوفات' : 'حُفظ الحذف محلياً؛ ستتم مزامنته عند عودة الإنترنت')
+    } catch { setSyncStatus('الحذف محفوظ محلياً؛ تعذرت المزامنة وستُعاد المحاولة عند الاتصال') }
     finally { setEditBusy(false) }
   }
   const restoreTrashItem = async (item: TrashRecord) => {
