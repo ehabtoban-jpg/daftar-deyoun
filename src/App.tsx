@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -67,6 +67,11 @@ function Dashboard({ user }: { user: User }) {
   const refreshActivity = async () => { try { setActivities(await listActivity()) } catch { setSyncStatus('تعذر تحميل سجل النشاطات') } }
   const refreshTrash = async () => { try { setTrashItems(await listTrash()) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
+
+  useEffect(() => {
+    // Remove expired trash records whenever an authenticated session opens the ledger.
+    void purgeExpiredTrash().catch(() => undefined)
+  }, [user.uid])
 
   useEffect(() => {
     let active = true
