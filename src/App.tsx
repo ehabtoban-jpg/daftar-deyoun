@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, type ActivityEvent } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2 } from 'lucide-react'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -32,7 +32,10 @@ function Dashboard({ user }: { user: User }) {
   const [syncStatus, setSyncStatus] = useState('جارٍ الاتصال بالسحابة…')
   const [showActivity, setShowActivity] = useState(false)
   const [activities, setActivities] = useState<ActivityEvent[]>([])
+  const [showTrash, setShowTrash] = useState(false)
+  const [trashItems, setTrashItems] = useState<TrashRecord[]>([])
   const refreshActivity = async () => { try { setActivities(await listActivity()) } catch { setSyncStatus('تعذر تحميل سجل النشاطات') } }
+  const refreshTrash = async () => { try { setTrashItems(await listTrash()) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
 
   useEffect(() => {
@@ -164,13 +167,20 @@ function Dashboard({ user }: { user: User }) {
       window.alert('لا يمكن حذف زبون لديه حركات مالية. عالج حركاته أولاً.')
       return
     }
-    if (!window.confirm('هل تريد حذف هذا الزبون نهائياً؟')) return
-    const id = selectedCustomer.id
-    const ok = await runLedgerMutation((cs, es) => {
-      if (es.some(e => e.customerId === id)) throw new Error('CUSTOMER_HAS_ENTRIES')
-      return { customers: cs.filter(c => c.id !== id), entries: es }
-    })
-    if (ok) { void logActivity('حذف زبون', `حذف الزبون ${selectedCustomer.name}`, '', selectedCustomer.name); setSelected('') }
+    if (!window.confirm('نقل هذا الزبون إلى سلة المحذوفات لمدة 10 أيام؟')) return
+    if (!navigator.onLine) { window.alert('سلة المحذوفات تحتاج اتصالاً بالإنترنت.'); return }
+    setEditBusy(true)
+    try {
+      await putInTrash({ entityType: 'customer', entity: selectedCustomer, deletedBy: actor }, (cs, es) => {
+        if (es.some(e => e.customerId === selectedCustomer.id)) throw new Error('CUSTOMER_HAS_ENTRIES')
+        return { customers: cs.filter(c => c.id !== selectedCustomer.id), entries: es }
+      }, user.uid)
+      void logActivity('نقل زبون إلى السلة', 'نقل الزبون ' + selectedCustomer.name + ' إلى سلة المحذوفات', '', selectedCustomer.name)
+      setSelected('')
+      setSyncStatus('تم نقل الزبون إلى سلة المحذوفات')
+    } catch {
+      window.alert('تعذر نقل الزبون. إذا كان لديه حركات مالية، لا يمكن نقله حالياً.')
+    } finally { setEditBusy(false) }
   }
   const openEntryEdit = (entry: Entry) => {
     setEditingId(entry.id); setKind(entry.kind); setAmount(String(entry.amount)); setCurrency(entry.currency); setNote(entry.note)
@@ -194,8 +204,30 @@ function Dashboard({ user }: { user: User }) {
   const deleteEntry = async (id: string) => {
     if (!window.confirm('هل تريد حذف هذه الحركة؟ سيتم تحديث الرصيد تلقائياً.')) return
     const target = entries.find(e => e.id === id)
-    const ok = await runLedgerMutation((cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }))
-    if (ok && target) void logActivity('حذف حركة', `حذف ${target.kind === 'debt' ? 'دين' : 'دفعة'} بقيمة ${money(target.amount, target.currency)}`, target.note, customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف')
+    if (!target) return
+    if (!navigator.onLine) { window.alert('سلة المحذوفات تحتاج اتصالاً بالإنترنت.'); return }
+    setEditBusy(true)
+    try {
+      const customerName = customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف'
+      await putInTrash({ entityType: 'entry', entity: target, deletedBy: actor }, (cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }), user.uid)
+      void logActivity('نقل حركة إلى السلة', 'نقل ' + (target.kind === 'debt' ? 'دين' : 'دفعة') + ' بقيمة ' + money(target.amount, target.currency) + ' إلى السلة', target.note, customerName)
+      setSyncStatus('تم نقل الحركة إلى سلة المحذوفات')
+    } catch { window.alert('تعذر نقل الحركة إلى سلة المحذوفات.') }
+    finally { setEditBusy(false) }
+  }
+  const restoreTrashItem = async (item: TrashRecord) => {
+    if (!navigator.onLine) { window.alert('استعادة العناصر تحتاج اتصالاً بالإنترنت.'); return }
+    if (!window.confirm('هل تريد استعادة هذا العنصر إلى الدفتر؟')) return
+    setEditBusy(true)
+    try {
+      await restoreTrash(item, user.uid)
+      await refreshTrash()
+      const customerName = item.entityType === 'customer' ? (item.entity as Customer).name : customers.find(c => c.id === (item.entity as Entry).customerId)?.name || 'زبون غير معروف'
+      void logActivity('استعادة من سلة المحذوفات', 'استعادة عنصر للزبون ' + customerName, '', customerName)
+      setSyncStatus('تمت استعادة العنصر')
+    } catch (error) {
+      window.alert(error instanceof Error && error.message === 'TRASH_ITEM_EXPIRED' ? 'انتهت مهلة الاستعادة لهذا العنصر.' : 'تعذرت الاستعادة. قد يكون العنصر موجوداً بالفعل أو انتهت مهلة الاستعادة.')
+    } finally { setEditBusy(false) }
   }
   const selectedCustomer = customers.find(c => c.id === selected)
   const customerRows = entries.filter(e => e.customerId === selected).sort((a,b) => b.date.localeCompare(a.date))
@@ -203,7 +235,11 @@ function Dashboard({ user }: { user: User }) {
 
   return <main className="app">
     <header className="topbar"><div><div className="brandmark">د</div><div><h1>دفتر الديون</h1><p>دفترك واضح… وحساباتك محفوظة</p></div></div><button className="outline" onClick={() => signOut(auth)}>تسجيل الخروج</button><label className="actor">المستخدم <select value={actor} onChange={e => {setActor(e.target.value); localStorage.setItem('dd-actor', e.target.value)}}><option>صاحب المحل</option><option>الأخ</option></select></label></header>
-    {showActivity ? <section className="panel activity-page">
+    {showTrash ? <section className="panel activity-page">
+      <div className="panel-head"><div><h2>سلة المحذوفات</h2><p>يمكن استعادة العناصر خلال 10 أيام من تاريخ الحذف</p></div><button className="outline" onClick={() => void refreshTrash()}>تحديث</button></div>
+      <button className="outline" onClick={() => setShowTrash(false)}>العودة إلى لوحة الحسابات</button>
+      {trashItems.length ? <div className="customer-list">{trashItems.map(item => { const expired = new Date(item.expiresAt).getTime() <= Date.now(); const label = item.entityType === 'customer' ? (item.entity as Customer).name : ((item.entity as Entry).kind === 'debt' ? 'دين ' : 'دفعة ') + (item.entity as Entry).amount + ' ' + (item.entity as Entry).currency; return <article className="entry activity-row" key={item.id}><span className="entry-info"><b>{label}</b><small>{item.entityType === 'customer' ? 'زبون' : 'حركة مالية'} · حُذف بواسطة: {item.deletedBy}</small><small>تاريخ النقل: {new Date(item.deletedAt).toLocaleString('ar')}</small><small>{expired ? 'انتهت مهلة الاستعادة' : 'آخر موعد للاستعادة: ' + new Date(item.expiresAt).toLocaleString('ar')}</small></span><button className="outline" disabled={editBusy || expired} onClick={() => void restoreTrashItem(item)}><RotateCcw size={15}/> استعادة</button></article> })}</div> : <div className="empty compact">سلة المحذوفات فارغة</div>}
+    </section> : showActivity ? <section className="panel activity-page">
       <div className="panel-head"><div><h2>سجل النشاطات</h2><p>كل العمليات التي تمت على دفتر الديون، مع اسم الزبون ووقت العملية</p></div><button className="outline" onClick={() => void refreshActivity()}>تحديث</button></div>
       <button className="outline" onClick={() => setShowActivity(false)}>العودة إلى لوحة الحسابات</button>
       {activities.length ? <div className="customer-list">{activities.map(item => <article className="entry activity-row" key={item.id}>
@@ -216,7 +252,7 @@ function Dashboard({ user }: { user: User }) {
       <article className="stat"><span className="stat-icon green"><Wallet size={20}/></span><p>إجمالي الديون بالليرة</p><strong>{money(totals.syp,'SYP')}</strong></article>
       <article className="stat"><span className="stat-icon amber"><Users size={20}/></span><p>الزبائن عليهم رصيد</p><strong>{balances.filter(c => c.usd > 0 || c.syp > 0).length}</strong></article>
     </section>
-    <section className="actions"><button className="outline" onClick={() => { setShowActivity(true); void refreshActivity() }}>سجل النشاطات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
+    <section className="actions"><button className="outline" onClick={() => { setShowActivity(true); setShowTrash(false); void refreshActivity() }}>سجل النشاطات</button><button className="outline" onClick={() => { setShowTrash(true); setShowActivity(false); void refreshTrash() }}><Archive size={16}/> سلة المحذوفات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
     <section className="panel"><div className="panel-head"><div><h3>الزبائن</h3><p>كل حساباتك في قائمة واحدة</p></div><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>الكل</button><button className={filter==='owing'?'active':''} onClick={()=>setFilter('owing')}>عليهم ديون</button></div></div>
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>{if(!modal)setSelected(c.id)}} disabled={modal !== null}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
@@ -225,11 +261,11 @@ function Dashboard({ user }: { user: User }) {
     <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
 
     </>}
-    {!showActivity && modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
+    {!showActivity && !showTrash && modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
       {modal==='customer' || modal==='editCustomer' ? <><label>اسم الزبون<input autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="مثلاً: أحمد محمد"/></label><label>رقم الهاتف (اختياري)<input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="05xxxxxxxx"/></label><button className="primary full" onClick={modal==='customer'?addCustomer:saveCustomerEdit} disabled={!name.trim() || editBusy}><Check size={18}/> {modal==='customer'?'حفظ الزبون':'حفظ التعديلات'}</button></> :
       modal==='editEntry' ? <><label>نوع الحركة<select value={kind} onChange={e=>setKind(e.target.value as 'debt'|'payment')}><option value="debt">دين</option><option value="payment">دفعة</option></select></label><label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>العملة<select value={currency} onChange={e=>setCurrency(e.target.value as Currency)}><option value="USD">دولار أمريكي ($)</option><option value="SYP">ليرة سورية (ل.س)</option></select></label><label>ملاحظة<input value={note} onChange={e=>setNote(e.target.value)}/></label><button className="primary full" onClick={saveEntryEdit} disabled={editBusy || !(Number(amount)>0)}><Check size={18}/> حفظ التعديلات</button></> : <><label>الزبون<select value={entryCustomerId} onChange={e=>setEntryCustomerId(e.target.value)}><option value="">اختر الزبون</option>{customers.map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>{entryError && <p className="form-error">{entryError}</p>}<div className="switch"><button className={kind==='debt'?'chosen':''} onClick={()=>setKind('debt')}><ArrowUpRight size={17}/> دين</button><button className={kind==='payment'?'chosen':''} onClick={()=>setKind('payment')}><ArrowDownLeft size={17}/> دفعة</button></div><label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00"/></label><label>العملة<select value={currency} onChange={e=>setCurrency(e.target.value as Currency)}><option value="USD">دولار أمريكي ($)</option><option value="SYP">ليرة سورية (ل.س)</option></select></label><label>ملاحظة (اختياري)<input value={note} onChange={e=>setNote(e.target.value)} placeholder="تفاصيل العملية"/></label><button className={kind==='debt'?'primary full':'success full'} onClick={addEntry} disabled={!entryCustomerId || !(Number(amount)>0)}><Check size={18}/> حفظ العملية</button></>}
     </section></div>}
-    {!showActivity && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
+    {!showActivity && !showTrash && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
   </main>
 }
 
