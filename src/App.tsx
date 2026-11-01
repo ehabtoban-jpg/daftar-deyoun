@@ -389,7 +389,7 @@ function Dashboard({ user, onLock, onPinStateChange }: { user: User; onLock: () 
     </section>
     {showActivity && <section className="panel activity-panel"><div className="panel-head"><div><h3>سجل النشاطات</h3><p>آخر العمليات التي سجلها المستخدمون</p></div><button className="outline" onClick={() => void refreshActivity()}>تحديث</button></div>{activities.length ? activities.map(item => <div className="entry" key={item.id}><span className="entry-info"><b>{item.action} — {item.description}</b><small>{item.actor} · {item.actorEmail} · {new Date(item.createdAt).toLocaleString('ar')}</small>{item.details && <small>{item.details}</small>}</span></div>) : <div className="empty compact">لا توجد نشاطات مسجلة بعد</div>}</section>}
     <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
-    {showPinSettings && <PinSettings onClose={() => setShowPinSettings(false)} onPinStateChange={onPinStateChange} onLock={onLock} />}
+    {showPinSettings && <PinSettings onClose={() => setShowPinSettings(false)} onPinStateChange={onPinStateChange} />}
 
     </>}
     {!showActivity && !showTrash && modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
@@ -422,7 +422,7 @@ async function derivePinHash(pin: string, salt: Uint8Array) {
   return toHex(new Uint8Array(bits))
 }
 
-function PinSettings({ onClose, onPinStateChange, onLock }: { onClose: () => void; onPinStateChange: (enabled: boolean) => void; onLock: () => void }) {
+function PinSettings({ onClose, onPinStateChange }: { onClose: () => void; onPinStateChange: (enabled: boolean) => void }) {
   const [currentPin, setCurrentPin] = useState('')
   const [newPin, setNewPin] = useState('')
   const [confirmPin, setConfirmPin] = useState('')
