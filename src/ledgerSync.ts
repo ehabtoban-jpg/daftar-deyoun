@@ -4,7 +4,7 @@ import { db } from './firebase'
 export type LedgerData = { customers: unknown[]; entries: unknown[]; updatedAt: string; updatedBy: string }
 export type LedgerCustomer = { id: string; name: string; phone: string; createdAt: string }
 export type LedgerEntry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount: number; currency: 'USD' | 'SYP'; note: string; actor: string; date: string }
-export type ActivityEvent = { id: string; action: string; description: string; actor: string; actorEmail: string; createdAt: string; details?: string }
+export type ActivityEvent = { id: string; action: string; description: string; actor: string; actorEmail: string; createdAt: string; details?: string; customerName?: string }
 export type TrashRecord = { id: string; entityType: 'customer' | 'entry'; entity: LedgerCustomer | LedgerEntry; deletedAt: string; expiresAt: string; deletedBy: string }
 
 const shop = 'daftar-shared'
