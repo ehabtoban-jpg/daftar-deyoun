@@ -99,6 +99,18 @@ export async function listTrash(): Promise<TrashRecord[]> {
   const snap = await getDocs(dataCollection())
   return snap.docs.filter(d => d.id.startsWith('trash-')).map(d => d.data() as TrashRecord).sort((a,b) => b.deletedAt.localeCompare(a.deletedAt))
 }
+export async function putInTrashWithId(id: string, record: Omit<TrashRecord, 'id' | 'deletedAt' | 'expiresAt'>, mutate: (customers: unknown[], entries: unknown[]) => { customers: unknown[]; entries: unknown[] }, userId: string, deletedAt: string, expiresAt: string) {
+  await runTransaction(db, async transaction => {
+    const mainRef = sharedLedgerRef()
+    const deletedRef = trashRef(id)
+    const [snap, deletedSnap] = await Promise.all([transaction.get(mainRef), transaction.get(deletedRef)])
+    if (deletedSnap.exists()) return
+    const data = snap.exists() ? snap.data() : {}
+    const next = mutate(Array.isArray(data.customers) ? data.customers : [], Array.isArray(data.entries) ? data.entries : [])
+    transaction.set(mainRef, { customers: next.customers, entries: next.entries, updatedAt: new Date().toISOString(), updatedBy: userId }, { merge: true })
+    transaction.set(deletedRef, { ...record, id, deletedAt, expiresAt })
+  })
+}
 export async function putInTrash(record: Omit<TrashRecord, 'id' | 'deletedAt' | 'expiresAt'>, mutate: (customers: unknown[], entries: unknown[]) => { customers: unknown[]; entries: unknown[] }, userId: string) {
   const id = crypto.randomUUID()
   const now = new Date()
