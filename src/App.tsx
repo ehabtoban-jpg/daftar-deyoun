@@ -12,7 +12,7 @@ const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumF
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
 type PendingLedgerWrite = { id: string; type: 'customer' | 'entry'; value: Customer | Entry; userId: string }
-type PendingEntityUpdate = { id: string; entityType: 'customer' | 'entry'; entityId: string; expected: Customer | Entry; replacement: Customer | Entry; userId: string }
+type PendingEntityUpdate = { id: string; entityType: 'customer' | 'entry'; entityId: string; expected: Customer | Entry; replacement: Customer | Entry; userId: string; forceFields?: string[] }
 const PENDING_UPDATES_KEY = 'dd-pending-entity-updates-v1'
 const readPendingUpdates = (): PendingEntityUpdate[] => load<PendingEntityUpdate[]>(PENDING_UPDATES_KEY, [])
 const enqueueEntityUpdate = (operation: PendingEntityUpdate) => {
@@ -41,7 +41,7 @@ async function flushPendingEntityUpdates() {
   for (const item of readPendingUpdates()) {
     if (!navigator.onLine) return
     try {
-      await updateSharedEntity(item.id, item.entityType, item.entityId, item.expected, item.replacement, item.userId)
+      await updateSharedEntity(item.id, item.entityType, item.entityId, item.expected, item.replacement, item.userId, item.forceFields ?? [])
       localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => write.id !== item.id)))
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
