@@ -40,8 +40,13 @@ async function flushPendingEntityUpdates() {
   if (!navigator.onLine) return
   for (const item of readPendingUpdates()) {
     if (!navigator.onLine) return
-    await updateSharedEntity(item.id, item.entityType, item.entityId, item.expected, item.replacement, item.userId)
-    localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => write.id !== item.id)))
+    try {
+      await updateSharedEntity(item.id, item.entityType, item.entityId, item.expected, item.replacement, item.userId)
+      localStorage.setItem(PENDING_UPDATES_KEY, JSON.stringify(readPendingUpdates().filter(write => write.id !== item.id)))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`تعذر مزامنة التعديل (${item.entityType}/${item.entityId}): ${reason}`)
+    }
   }
 }
 
@@ -209,9 +214,12 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       }
       if (data) {
         applyLocalLedger(data.customers as Customer[], data.entries as Entry[])
-        localStorage.setItem('dd-customers', JSON.stringify(data.customers))
-        localStorage.setItem('dd-entries', JSON.stringify(data.entries))
-        setSyncStatus('متصل ومتزامن')
+        const pendingUpdates = readPendingUpdates()
+        if (pendingUpdates.length > 0) {
+          setSyncStatus(`متصل؛ يوجد ${pendingUpdates.length} تعديل معلّق لم تتم مزامنته بعد`)
+        } else {
+          setSyncStatus('متصل ومتزامن')
+        }
       } else {
         const localCustomers = load<Customer[]>('dd-customers', [])
         const localEntries = load<Entry[]>('dd-entries', [])
