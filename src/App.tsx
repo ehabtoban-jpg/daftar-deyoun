@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, type ActivityEvent } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2 } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -30,6 +30,10 @@ function Dashboard({ user }: { user: User }) {
   const [filter, setFilter] = useState<'all' | 'owing'>('all')
   const [entryError, setEntryError] = useState('')
   const [syncStatus, setSyncStatus] = useState('جارٍ الاتصال بالسحابة…')
+  const [showActivity, setShowActivity] = useState(false)
+  const [activities, setActivities] = useState<ActivityEvent[]>([])
+  const refreshActivity = async () => { try { setActivities(await listActivity()) } catch { setSyncStatus('تعذر تحميل سجل النشاطات') } }
+  const logActivity = async (action: string, description: string, details = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
 
   useEffect(() => {
     let active = true
@@ -92,6 +96,7 @@ function Dashboard({ user }: { user: User }) {
     void appendSharedCustomer(customer, user.uid)
       .then(() => setSyncStatus('متصل ومتزامن'))
       .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظ محلياً، بانتظار عودة الإنترنت'))
+    void logActivity('إضافة زبون', `إضافة الزبون: ${customer.name}`, customer.phone)
   }
   const persistEntry = (entry: Entry) => {
     const next = [...entries, entry]
@@ -101,6 +106,7 @@ function Dashboard({ user }: { user: User }) {
     void appendSharedEntry(entry, user.uid)
       .then(() => setSyncStatus('متصل ومتزامن'))
       .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت'))
+    void logActivity(entry.kind === 'debt' ? 'تسجيل دين' : 'تسجيل دفعة', `${entry.kind === 'debt' ? 'دين' : 'دفعة'} بقيمة ${money(entry.amount, entry.currency)}`, entry.note)
   }
   const balances = useMemo(() => customers.map(c => {
     const rows = entries.filter(e => e.customerId === c.id)
@@ -150,7 +156,7 @@ function Dashboard({ user }: { user: User }) {
       customers: cs.map(c => c.id === editingId ? { ...c, name: name.trim(), phone: phone.trim() } : c),
       entries: es,
     }))
-    if (ok) { setModal(null); setName(''); setPhone('') }
+    if (ok) { void logActivity('تعديل زبون', `تعديل بيانات الزبون ${name.trim()}`); setModal(null); setName(''); setPhone('') }
   }
   const deleteCustomer = async () => {
     if (!selectedCustomer) return
@@ -164,7 +170,7 @@ function Dashboard({ user }: { user: User }) {
       if (es.some(e => e.customerId === id)) throw new Error('CUSTOMER_HAS_ENTRIES')
       return { customers: cs.filter(c => c.id !== id), entries: es }
     })
-    if (ok) setSelected('')
+    if (ok) { void logActivity('حذف زبون', `حذف الزبون ${selectedCustomer.name} إلى سجل النشاطات`); setSelected('') }
   }
   const openEntryEdit = (entry: Entry) => {
     setEditingId(entry.id); setKind(entry.kind); setAmount(String(entry.amount)); setCurrency(entry.currency); setNote(entry.note)
@@ -183,11 +189,13 @@ function Dashboard({ user }: { user: User }) {
       customers: cs,
       entries: es.map(e => e.id === editingId ? { ...e, kind, amount: n, currency, note: note.trim() } : e),
     }))
-    if (ok) { setModal(null); setAmount(''); setNote('') }
+    if (ok) { void logActivity('تعديل حركة', `تعديل حركة بمبلغ ${money(n, currency)}`); setModal(null); setAmount(''); setNote('') }
   }
   const deleteEntry = async (id: string) => {
     if (!window.confirm('هل تريد حذف هذه الحركة؟ سيتم تحديث الرصيد تلقائياً.')) return
-    await runLedgerMutation((cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }))
+    const target = entries.find(e => e.id === id)
+    const ok = await runLedgerMutation((cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }))
+    if (ok && target) void logActivity('حذف حركة', `حذف ${target.kind === 'debt' ? 'دين' : 'دفعة'} بقيمة ${money(target.amount, target.currency)}`)
   }
   const selectedCustomer = customers.find(c => c.id === selected)
   const customerRows = entries.filter(e => e.customerId === selected).sort((a,b) => b.date.localeCompare(a.date))
@@ -201,11 +209,12 @@ function Dashboard({ user }: { user: User }) {
       <article className="stat"><span className="stat-icon green"><Wallet size={20}/></span><p>إجمالي الديون بالليرة</p><strong>{money(totals.syp,'SYP')}</strong></article>
       <article className="stat"><span className="stat-icon amber"><Users size={20}/></span><p>الزبائن عليهم رصيد</p><strong>{balances.filter(c => c.usd > 0 || c.syp > 0).length}</strong></article>
     </section>
-    <section className="actions"><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
+    <section className="actions"><button className="outline" onClick={() => { setShowActivity(v => !v); if (!showActivity) void refreshActivity() }}>سجل النشاطات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
     <section className="panel"><div className="panel-head"><div><h3>الزبائن</h3><p>كل حساباتك في قائمة واحدة</p></div><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>الكل</button><button className={filter==='owing'?'active':''} onClick={()=>setFilter('owing')}>عليهم ديون</button></div></div>
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>{if(!modal)setSelected(c.id)}} disabled={modal !== null}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
     </section>
+    {showActivity && <section className="panel activity-panel"><div className="panel-head"><div><h3>سجل النشاطات</h3><p>آخر العمليات التي سجلها المستخدمون</p></div><button className="outline" onClick={() => void refreshActivity()}>تحديث</button></div>{activities.length ? activities.map(item => <div className="entry" key={item.id}><span className="entry-info"><b>{item.action} — {item.description}</b><small>{item.actor} · {item.actorEmail} · {new Date(item.createdAt).toLocaleString('ar')}</small>{item.details && <small>{item.details}</small>}</span></div>) : <div className="empty compact">لا توجد نشاطات مسجلة بعد</div>}</section>}
     <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
 
     {modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
