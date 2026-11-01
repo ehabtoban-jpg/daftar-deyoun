@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
+import { watchSharedLedger, saveSharedLedger } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -25,9 +26,58 @@ function Dashboard({ user }: { user: User }) {
   const [note, setNote] = useState('')
   const [filter, setFilter] = useState<'all' | 'owing'>('all')
   const [entryError, setEntryError] = useState('')
+  const [syncReady, setSyncReady] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('جارٍ الاتصال بالسحابة…')
 
-  const persistCustomers = (v: Customer[]) => { setCustomers(v); localStorage.setItem('dd-customers', JSON.stringify(v)) }
-  const persistEntries = (v: Entry[]) => { setEntries(v); localStorage.setItem('dd-entries', JSON.stringify(v)) }
+  useEffect(() => {
+    let active = true
+    const unsubscribe = watchSharedLedger(data => {
+      if (!active) return
+      if (data) {
+        setCustomers(data.customers as Customer[])
+        setEntries(data.entries as Entry[])
+        localStorage.setItem('dd-customers', JSON.stringify(data.customers))
+        localStorage.setItem('dd-entries', JSON.stringify(data.entries))
+        setSyncReady(true)
+        setSyncStatus('متصل ومتزامن')
+      } else {
+        const localCustomers = load<Customer[]>('dd-customers', [])
+        const localEntries = load<Entry[]>('dd-entries', [])
+        void saveSharedLedger(localCustomers, localEntries, user.uid).then(() => {
+          if (!active) return
+          setCustomers(localCustomers)
+          setEntries(localEntries)
+          setSyncReady(true)
+          setSyncStatus('تم رفع البيانات المحلية إلى السحابة')
+        }).catch(() => {
+          if (active) setSyncStatus('تعذر إنشاء الدفتر السحابي')
+        })
+      }
+    }, () => {
+      if (active) {
+        setSyncReady(false)
+        setSyncStatus('فشل الاتصال بالسحابة')
+      }
+    })
+    return () => { active = false; unsubscribe() }
+  }, [user.uid])
+
+  const persistCustomers = (v: Customer[]) => {
+    if (!syncReady) return
+    setCustomers(v)
+    localStorage.setItem('dd-customers', JSON.stringify(v))
+    void saveSharedLedger(v, entries, user.uid)
+      .then(() => setSyncStatus('متصل ومتزامن'))
+      .catch(() => setSyncStatus('فشل الحفظ السحابي'))
+  }
+  const persistEntries = (v: Entry[]) => {
+    if (!syncReady) return
+    setEntries(v)
+    localStorage.setItem('dd-entries', JSON.stringify(v))
+    void saveSharedLedger(customers, v, user.uid)
+      .then(() => setSyncStatus('متصل ومتزامن'))
+      .catch(() => setSyncStatus('فشل الحفظ السحابي'))
+  }
   const balances = useMemo(() => customers.map(c => {
     const rows = entries.filter(e => e.customerId === c.id)
     const balance = (cur: Currency) => rows.reduce((s, e) => s + (e.currency === cur ? (e.kind === 'debt' ? e.amount : -e.amount) : 0), 0)
@@ -68,7 +118,7 @@ function Dashboard({ user }: { user: User }) {
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>setSelected(c.id)}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
     </section>
-    <footer><span>مسجل الدخول: {user.email}</span><span>الحفظ المحلي فقط حالياً — المزامنة قيد الربط</span></footer>
+    <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
 
     {modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
       {modal==='customer' ? <><label>اسم الزبون<input autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="مثلاً: أحمد محمد"/></label><label>رقم الهاتف (اختياري)<input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="05xxxxxxxx"/></label><button className="primary full" onClick={addCustomer} disabled={!name.trim()}><Check size={18}/> حفظ الزبون</button></> :
