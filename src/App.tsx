@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth'
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check } from 'lucide-react'
 
