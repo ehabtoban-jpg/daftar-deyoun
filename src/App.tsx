@@ -220,8 +220,11 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const applyLocalLedger = (localCustomers: Customer[], localEntries: Entry[]) => {
       // Keep queued offline edits visible when an older Firestore snapshot arrives.
       const pending = readPendingUpdates()
-      const mergedCustomers = [...localCustomers]
-      const mergedEntries = [...localEntries]
+      const pendingDeletes = readPendingTrashDeletes().map(item => item.record)
+      const deletedCustomerIds = new Set(pendingDeletes.filter(item => item.entityType === 'customer').map(item => item.entity.id))
+      const deletedEntryIds = new Set(pendingDeletes.filter(item => item.entityType === 'entry').map(item => item.entity.id))
+      const mergedCustomers = localCustomers.filter(customer => !deletedCustomerIds.has(customer.id))
+      const mergedEntries = localEntries.filter(entry => !deletedEntryIds.has(entry.id) && !deletedCustomerIds.has(entry.customerId))
       for (const item of pending) {
         if (item.entityType === 'customer') {
           const index = mergedCustomers.findIndex(row => row.id === item.entityId)
@@ -244,8 +247,6 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       if (!navigator.onLine) {
         if (data) {
           applyLocalLedger(data.customers as Customer[], data.entries as Entry[])
-          localStorage.setItem('dd-customers', JSON.stringify(data.customers))
-          localStorage.setItem('dd-entries', JSON.stringify(data.entries))
         } else {
           applyLocalLedger(load<Customer[]>('dd-customers', []), load<Entry[]>('dd-entries', []))
         }
