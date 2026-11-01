@@ -11,6 +11,25 @@ type Entry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount:
 const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumFractionDigits: 2 }).format(n) + (c === 'USD' ? ' $' : ' ل.س')
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
+type PendingLedgerWrite = { id: string; type: 'customer' | 'entry'; value: Customer | Entry; userId: string }
+const PENDING_WRITES_KEY = 'dd-pending-ledger-writes-v1'
+const readPendingWrites = (): PendingLedgerWrite[] => load<PendingLedgerWrite[]>(PENDING_WRITES_KEY, [])
+const enqueueLedgerWrite = (write: PendingLedgerWrite) => {
+  const queue = readPendingWrites()
+  if (!queue.some(item => item.id === write.id)) localStorage.setItem(PENDING_WRITES_KEY, JSON.stringify([...queue, write]))
+}
+async function flushPendingLedgerWrites() {
+  if (!navigator.onLine) return
+  const queue = readPendingWrites()
+  for (const item of queue) {
+    if (!navigator.onLine) return
+    if (item.type === 'customer') await appendSharedCustomer(item.value as Customer, item.userId)
+    else await appendSharedEntry(item.value as Entry, item.userId)
+    const latest = readPendingWrites().filter(write => write.id !== item.id)
+    localStorage.setItem(PENDING_WRITES_KEY, JSON.stringify(latest))
+  }
+}
+
 function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (enabled: boolean) => void }) {
   const [customers, setCustomers] = useState<Customer[]>(() => load('dd-customers', []))
   const [entries, setEntries] = useState<Entry[]>(() => load('dd-entries', []))
@@ -125,7 +144,12 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     }
     const markOnline = () => {
       if (!active) return
-      setSyncStatus('عاد الإنترنت، جارٍ التحقق من المزامنة…')
+      setSyncStatus('عاد الإنترنت، جارٍ مزامنة العمليات المعلّقة…')
+      void flushPendingLedgerWrites().then(() => {
+        if (active) setSyncStatus('تمت مزامنة الإضافات المعلّقة؛ جارٍ تحديث الدفتر')
+      }).catch(() => {
+        if (active) setSyncStatus('تعذرت مزامنة بعض الإضافات؛ ستبقى محفوظة لإعادة المحاولة')
+      })
     }
     window.addEventListener('offline', markOffline)
     window.addEventListener('online', markOnline)
@@ -186,20 +210,30 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const next = [...customers, customer]
     setCustomers(next)
     localStorage.setItem('dd-customers', JSON.stringify(next))
-    setSyncStatus(navigator.onLine ? 'جارٍ حفظ الزبون ومزامنته…' : 'حُفظ محلياً، بانتظار عودة الإنترنت')
-    void appendSharedCustomer(customer, user.uid)
-      .then(() => setSyncStatus('متصل ومتزامن'))
-      .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظ محلياً، بانتظار عودة الإنترنت'))
+    enqueueLedgerWrite({ id: customer.id, type: 'customer', value: customer, userId: user.uid })
+    if (!navigator.onLine) {
+      setSyncStatus('حُفظ الزبون محلياً، بانتظار عودة الإنترنت')
+    } else {
+      setSyncStatus('جارٍ حفظ الزبون ومزامنته…')
+      void flushPendingLedgerWrites()
+        .then(() => setSyncStatus('تمت مزامنة الإضافات المعلّقة'))
+        .catch(() => setSyncStatus('تعذر تأكيد المزامنة؛ بقيت الإضافة محفوظة لإعادة المحاولة'))
+    }
     void logActivity('إضافة زبون', `إضافة الزبون: ${customer.name}`, customer.phone, customer.name)
   }
   const persistEntry = (entry: Entry) => {
     const next = [...entries, entry]
     setEntries(next)
     localStorage.setItem('dd-entries', JSON.stringify(next))
-    setSyncStatus(navigator.onLine ? 'جارٍ حفظ الحركة ومزامنتها…' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت')
-    void appendSharedEntry(entry, user.uid)
-      .then(() => setSyncStatus('متصل ومتزامن'))
-      .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت'))
+    enqueueLedgerWrite({ id: entry.id, type: 'entry', value: entry, userId: user.uid })
+    if (!navigator.onLine) {
+      setSyncStatus('حُفظت الحركة محلياً، بانتظار عودة الإنترنت')
+    } else {
+      setSyncStatus('جارٍ حفظ الحركة ومزامنتها…')
+      void flushPendingLedgerWrites()
+        .then(() => setSyncStatus('تمت مزامنة الإضافات المعلّقة'))
+        .catch(() => setSyncStatus('تعذر تأكيد المزامنة؛ بقيت الإضافة محفوظة لإعادة المحاولة'))
+    }
     void logActivity(entry.kind === 'debt' ? 'تسجيل دين' : 'تسجيل دفعة', `${entry.kind === 'debt' ? 'دين' : 'دفعة'} بقيمة ${money(entry.amount, entry.currency)}`, entry.note, customers.find(c => c.id === entry.customerId)?.name || 'زبون غير معروف')
   }
   const balances = useMemo(() => customers.map(c => {
