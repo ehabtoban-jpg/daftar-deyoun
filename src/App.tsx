@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrash, putInTrashWithId, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrashWithId, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
