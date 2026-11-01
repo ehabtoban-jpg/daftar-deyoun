@@ -131,15 +131,28 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     window.addEventListener('online', markOnline)
     if (!navigator.onLine) markOffline()
 
+    const applyLocalLedger = (localCustomers: Customer[], localEntries: Entry[]) => {
+      setCustomers(localCustomers)
+      setEntries(localEntries)
+    }
+
     const unsubscribe = watchSharedLedger(data => {
       if (!active) return
+      // Firestore persistence serves its last cached snapshot while offline.
+      // Never discard that snapshot just because the network is unavailable.
       if (!navigator.onLine) {
+        if (data) {
+          applyLocalLedger(data.customers as Customer[], data.entries as Entry[])
+          localStorage.setItem('dd-customers', JSON.stringify(data.customers))
+          localStorage.setItem('dd-entries', JSON.stringify(data.entries))
+        } else {
+          applyLocalLedger(load<Customer[]>('dd-customers', []), load<Entry[]>('dd-entries', []))
+        }
         markOffline()
         return
       }
       if (data) {
-        setCustomers(data.customers as Customer[])
-        setEntries(data.entries as Entry[])
+        applyLocalLedger(data.customers as Customer[], data.entries as Entry[])
         localStorage.setItem('dd-customers', JSON.stringify(data.customers))
         localStorage.setItem('dd-entries', JSON.stringify(data.entries))
         setSyncStatus('متصل ومتزامن')
@@ -148,8 +161,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
         const localEntries = load<Entry[]>('dd-entries', [])
         void saveSharedLedger(localCustomers, localEntries, user.uid).then(() => {
           if (!active) return
-          setCustomers(localCustomers)
-          setEntries(localEntries)
+          applyLocalLedger(localCustomers, localEntries)
           setSyncStatus('تم رفع البيانات المحلية إلى السحابة')
         }).catch(() => {
           if (active) {
