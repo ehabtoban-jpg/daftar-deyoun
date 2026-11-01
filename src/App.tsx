@@ -36,6 +36,7 @@ function Dashboard({ user }: { user: User }) {
   const [showTrash, setShowTrash] = useState(false)
   const [trashItems, setTrashItems] = useState<TrashRecord[]>([])
   const [backupBusy, setBackupBusy] = useState(false)
+  const [contactsBusy, setContactsBusy] = useState(false)
   const backupInput = useRef<HTMLInputElement>(null)
   const downloadBackup = async () => {
     setBackupBusy(true)
@@ -66,6 +67,46 @@ function Dashboard({ user }: { user: User }) {
     } finally { setBackupBusy(false); if (backupInput.current) backupInput.current.value = '' }
   }
   const refreshActivity = async () => { try { setActivities(await listActivity()) } catch { setSyncStatus('تعذر تحميل سجل النشاطات') } }
+  const importPhoneContacts = async () => {
+    type ContactPickerNavigator = Navigator & { contacts?: { select: (properties: string[], options?: { multiple?: boolean }) => Promise<Array<{ name?: string[]; tel?: string[] }>> } }
+    const picker = (navigator as ContactPickerNavigator).contacts
+    if (!picker || typeof picker.select !== 'function') {
+      window.alert('استيراد جهات الاتصال مباشرة غير مدعوم في هذا المتصفح. جرّب Chrome على هاتف Android، أو أضف الزبون يدوياً حالياً.')
+      return
+    }
+    setContactsBusy(true)
+    try {
+      const selectedContacts = await picker.select(['name', 'tel'], { multiple: true })
+      const normalizePhone = (value: string) => value.replace(/\D/g, '')
+      const knownPhones = new Set(customers.map(customer => normalizePhone(customer.phone)).filter(Boolean))
+      const knownNames = new Set(customers.map(customer => customer.name.trim().toLocaleLowerCase()))
+      const additions: Customer[] = []
+      for (const contact of selectedContacts) {
+        const contactName = contact.name?.find(value => value.trim())?.trim() || ''
+        const contactPhone = contact.tel?.find(value => value.trim())?.trim() || ''
+        if (!contactName) continue
+        const normalizedPhone = normalizePhone(contactPhone)
+        const normalizedName = contactName.toLocaleLowerCase()
+        if ((normalizedPhone && knownPhones.has(normalizedPhone)) || (!normalizedPhone && knownNames.has(normalizedName))) continue
+        additions.push({ id: crypto.randomUUID(), name: contactName, phone: contactPhone, createdAt: new Date().toISOString() })
+        if (normalizedPhone) knownPhones.add(normalizedPhone)
+        knownNames.add(normalizedName)
+      }
+      if (!additions.length) { window.alert(selectedContacts.length ? 'لم نعثر على جهات اتصال جديدة؛ قد تكون مضافة مسبقاً أو بلا أسماء.' : 'لم يتم اختيار أي جهة اتصال.'); return }
+      const next = [...customers, ...additions]
+      setCustomers(next)
+      localStorage.setItem('dd-customers', JSON.stringify(next))
+      setSyncStatus('جارٍ حفظ جهات الاتصال ومزامنتها…')
+      for (const customer of additions) await appendSharedCustomer(customer, user.uid)
+      await logActivity('استيراد جهات اتصال', 'تم استيراد ' + additions.length + ' جهة اتصال من الهاتف')
+      setSyncStatus('تم استيراد ومزامنة ' + additions.length + ' جهة اتصال')
+      window.alert('تم استيراد ' + additions.length + ' جهة اتصال بنجاح.')
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return
+      setSyncStatus('تعذر استيراد بعض جهات الاتصال')
+      window.alert('تعذر إكمال الاستيراد. تحقق من اتصال الإنترنت وصلاحية جهات الاتصال ثم حاول مجدداً.')
+    } finally { setContactsBusy(false) }
+  }
   const refreshTrash = async () => { try { setTrashItems(await listTrash()) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
 
@@ -340,7 +381,7 @@ function Dashboard({ user }: { user: User }) {
       <article className="stat"><span className="stat-icon green"><Wallet size={20}/></span><p>إجمالي الديون بالليرة</p><strong>{money(totals.syp,'SYP')}</strong></article>
       <article className="stat"><span className="stat-icon amber"><Users size={20}/></span><p>الزبائن عليهم رصيد</p><strong>{balances.filter(c => c.usd > 0 || c.syp > 0).length}</strong></article>
     </section>
-    <section className="actions"><button className="outline" disabled={backupBusy} onClick={() => void downloadBackup()}><Download size={16}/> تنزيل نسخة احتياطية</button><button className="outline" disabled={backupBusy} onClick={() => backupInput.current?.click()}><Upload size={16}/> استعادة نسخة</button><input ref={backupInput} type="file" accept=".json,application/json" hidden onChange={e => void importBackup(e.target.files?.[0])}/><button className="outline" onClick={() => { setShowActivity(true); setShowTrash(false); void refreshActivity() }}>سجل النشاطات</button><button className="outline" onClick={() => { setShowTrash(true); setShowActivity(false); void refreshTrash() }}><Archive size={16}/> سلة المحذوفات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
+    <section className="actions"><button className="outline" disabled={backupBusy} onClick={() => void downloadBackup()}><Download size={16}/> تنزيل نسخة احتياطية</button><button className="outline" disabled={backupBusy} onClick={() => backupInput.current?.click()}><Upload size={16}/> استعادة نسخة</button><input ref={backupInput} type="file" accept=".json,application/json" hidden onChange={e => void importBackup(e.target.files?.[0])}/><button className="outline" onClick={() => { setShowActivity(true); setShowTrash(false); void refreshActivity() }}>سجل النشاطات</button><button className="outline" onClick={() => { setShowTrash(true); setShowActivity(false); void refreshTrash() }}><Archive size={16}/> سلة المحذوفات</button><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" disabled={contactsBusy} onClick={() => void importPhoneContacts()}><Users size={18}/> {contactsBusy ? 'جارٍ استيراد جهات الاتصال…' : 'استيراد جهات الاتصال'}</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
     <section className="panel"><div className="panel-head"><div><h3>الزبائن</h3><p>كل حساباتك في قائمة واحدة</p></div><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>الكل</button><button className={filter==='owing'?'active':''} onClick={()=>setFilter('owing')}>عليهم ديون</button></div></div>
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>{if(!modal)setSelected(c.id)}} disabled={modal !== null}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
