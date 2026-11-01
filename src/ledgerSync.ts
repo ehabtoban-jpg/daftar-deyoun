@@ -1,4 +1,4 @@
-import { arrayUnion, doc, onSnapshot, runTransaction, setDoc } from 'firebase/firestore
+import { arrayUnion, doc, onSnapshot, runTransaction, setDoc } from 'firebase/firestore'
 import { db } from './firebase'
 
 export type LedgerData = {
