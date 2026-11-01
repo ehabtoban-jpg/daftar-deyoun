@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -89,21 +89,23 @@ function Dashboard({ user }: { user: User }) {
     }
   }, [user.uid])
 
-  const persistCustomers = (v: Customer[]) => {
-    if (!syncReady) return
-    setCustomers(v)
-    localStorage.setItem('dd-customers', JSON.stringify(v))
-    void saveSharedLedger(v, entries, user.uid)
+  const persistCustomer = (customer: Customer) => {
+    const next = [...customers, customer]
+    setCustomers(next)
+    localStorage.setItem('dd-customers', JSON.stringify(next))
+    setSyncStatus(navigator.onLine ? 'جارٍ حفظ الزبون ومزامنته…' : 'حُفظ محلياً، بانتظار عودة الإنترنت')
+    void appendSharedCustomer(customer, user.uid)
       .then(() => setSyncStatus('متصل ومتزامن'))
-      .catch(() => setSyncStatus('فشل الحفظ السحابي'))
+      .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظ محلياً، بانتظار عودة الإنترنت'))
   }
-  const persistEntries = (v: Entry[]) => {
-    if (!syncReady) return
-    setEntries(v)
-    localStorage.setItem('dd-entries', JSON.stringify(v))
-    void saveSharedLedger(customers, v, user.uid)
+  const persistEntry = (entry: Entry) => {
+    const next = [...entries, entry]
+    setEntries(next)
+    localStorage.setItem('dd-entries', JSON.stringify(next))
+    setSyncStatus(navigator.onLine ? 'جارٍ حفظ الحركة ومزامنتها…' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت')
+    void appendSharedEntry(entry, user.uid)
       .then(() => setSyncStatus('متصل ومتزامن'))
-      .catch(() => setSyncStatus('فشل الحفظ السحابي'))
+      .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت'))
   }
   const balances = useMemo(() => customers.map(c => {
     const rows = entries.filter(e => e.customerId === c.id)
@@ -114,7 +116,7 @@ function Dashboard({ user }: { user: User }) {
   const shown = balances.filter(c => (filter === 'all' || c.usd > 0 || c.syp > 0) && (c.name.includes(query) || c.phone.includes(query)))
   const addCustomer = () => {
     if (!name.trim()) return
-    persistCustomers([...customers, { id: crypto.randomUUID(), name: name.trim(), phone: phone.trim(), createdAt: new Date().toISOString() }])
+    persistCustomer({ id: crypto.randomUUID(), name: name.trim(), phone: phone.trim(), createdAt: new Date().toISOString() })
     setName(''); setPhone(''); setModal(null)
   }
   const addEntry = () => {
@@ -125,7 +127,7 @@ function Dashboard({ user }: { user: User }) {
       if (n > current) { setEntryError('قيمة الدفعة أكبر من الرصيد المستحق بهذه العملة.'); return }
     }
     setEntryError('')
-    persistEntries([...entries, { id: crypto.randomUUID(), customerId: entryCustomerId, kind, amount: n, currency, note: note.trim(), actor, date: new Date().toISOString() }])
+    persistEntry({ id: crypto.randomUUID(), customerId: entryCustomerId, kind, amount: n, currency, note: note.trim(), actor, date: new Date().toISOString() })
     setAmount(''); setNote(''); setEntryError(''); setModal(null)
   }
   const selectedCustomer = customers.find(c => c.id === selected)
