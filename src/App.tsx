@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
 import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger, recordActivity, listActivity, listTrash, putInTrash, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle } from 'lucide-react'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -11,7 +11,7 @@ type Entry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount:
 const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumFractionDigits: 2 }).format(n) + (c === 'USD' ? ' $' : ' ل.س')
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
-function Dashboard({ user }: { user: User }) {
+function Dashboard({ user, onLock, onPinStateChange }: { user: User; onLock: () => void; onPinStateChange: (enabled: boolean) => void }) {
   const [customers, setCustomers] = useState<Customer[]>(() => load('dd-customers', []))
   const [entries, setEntries] = useState<Entry[]>(() => load('dd-entries', []))
   const [actor, setActor] = useState(() => localStorage.getItem('dd-actor') || 'صاحب المحل')
@@ -37,6 +37,7 @@ function Dashboard({ user }: { user: User }) {
   const [trashItems, setTrashItems] = useState<TrashRecord[]>([])
   const [backupBusy, setBackupBusy] = useState(false)
   const [contactsBusy, setContactsBusy] = useState(false)
+  const [showPinSettings, setShowPinSettings] = useState(false)
   const backupInput = useRef<HTMLInputElement>(null)
   const downloadBackup = async () => {
     setBackupBusy(true)
@@ -363,7 +364,7 @@ function Dashboard({ user }: { user: User }) {
   }
 
   return <main className="app">
-    <header className="topbar"><div><div className="brandmark">د</div><div><h1>دفتر الديون</h1><p>دفترك واضح… وحساباتك محفوظة</p></div></div><button className="outline" onClick={() => signOut(auth)}>تسجيل الخروج</button><label className="actor">المستخدم <select value={actor} onChange={e => {setActor(e.target.value); localStorage.setItem('dd-actor', e.target.value)}}><option>صاحب المحل</option><option>الأخ</option></select></label></header>
+    <header className="topbar"><div><div className="brandmark">د</div><div><h1>دفتر الديون</h1><p>دفترك واضح… وحساباتك محفوظة</p></div></div><button className="outline" onClick={() => setShowPinSettings(true)}><ShieldCheck size={16}/> أمان القفل</button><button className="outline" onClick={() => signOut(auth)}>تسجيل الخروج</button><label className="actor">المستخدم <select value={actor} onChange={e => {setActor(e.target.value); localStorage.setItem('dd-actor', e.target.value)}}><option>صاحب المحل</option><option>الأخ</option></select></label></header>
     {showTrash ? <section className="panel activity-page">
       <div className="panel-head"><div><h2>سلة المحذوفات</h2><p>يمكن استعادة العناصر خلال 10 أيام من تاريخ الحذف</p></div><button className="outline" onClick={() => void refreshTrash()}>تحديث</button></div>
       <button className="outline" onClick={() => setShowTrash(false)}>العودة إلى لوحة الحسابات</button>
@@ -388,6 +389,7 @@ function Dashboard({ user }: { user: User }) {
     </section>
     {showActivity && <section className="panel activity-panel"><div className="panel-head"><div><h3>سجل النشاطات</h3><p>آخر العمليات التي سجلها المستخدمون</p></div><button className="outline" onClick={() => void refreshActivity()}>تحديث</button></div>{activities.length ? activities.map(item => <div className="entry" key={item.id}><span className="entry-info"><b>{item.action} — {item.description}</b><small>{item.actor} · {item.actorEmail} · {new Date(item.createdAt).toLocaleString('ar')}</small>{item.details && <small>{item.details}</small>}</span></div>) : <div className="empty compact">لا توجد نشاطات مسجلة بعد</div>}</section>}
     <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
+    {showPinSettings && <PinSettings onClose={() => setShowPinSettings(false)} onPinStateChange={onPinStateChange} onLock={onLock} />}
 
     </>}
     {!showActivity && !showTrash && modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
@@ -418,6 +420,44 @@ async function derivePinHash(pin: string, salt: Uint8Array) {
   new Uint8Array(saltBuffer).set(salt)
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: saltBuffer, iterations: 210000, hash: 'SHA-256' }, key, 256)
   return toHex(new Uint8Array(bits))
+}
+
+function PinSettings({ onClose, onPinStateChange, onLock }: { onClose: () => void; onPinStateChange: (enabled: boolean) => void; onLock: () => void }) {
+  const [currentPin, setCurrentPin] = useState('')
+  const [newPin, setNewPin] = useState('')
+  const [confirmPin, setConfirmPin] = useState('')
+  const [action, setAction] = useState<'change' | 'disable'>('change')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); setError(''); setBusy(true)
+    try {
+      const saved = localStorage.getItem(DEVICE_PIN_KEY)
+      if (!saved) throw new Error('PIN_NOT_FOUND')
+      const record = JSON.parse(saved) as { salt: string; hash: string }
+      const actual = await derivePinHash(currentPin, fromHex(record.salt))
+      if (actual !== record.hash) { setError('رمز PIN الحالي غير صحيح.'); return }
+      if (action === 'disable') {
+        localStorage.removeItem(DEVICE_PIN_KEY); onPinStateChange(false); onClose(); return
+      }
+      if (!/^\\d{4,8}$/.test(newPin)) { setError('استخدم رمزاً جديداً من 4 إلى 8 أرقام.'); return }
+      if (newPin !== confirmPin) { setError('الرمزان الجديدان غير متطابقين.'); return }
+      const salt = crypto.getRandomValues(new Uint8Array(16))
+      const hash = await derivePinHash(newPin, salt)
+      localStorage.setItem(DEVICE_PIN_KEY, JSON.stringify({ salt: toHex(salt), hash }))
+      onPinStateChange(true); onClose()
+      window.alert('تم تغيير رمز PIN لهذا الجهاز بنجاح.')
+    } catch { setError('تعذر تحديث القفل. تأكد من استخدام اتصال آمن وحاول مجدداً.') }
+    finally { setBusy(false) }
+  }
+  return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><section className="dialog">
+    <button className="close" onClick={onClose}><X/></button><h3>إعدادات قفل هذا الجهاز</h3><p>هذا الإعداد محلي ولا يؤثر على قفل أجهزتك الأخرى.</p>
+    <div className="actions"><button type="button" className={action === 'change' ? 'primary' : 'outline'} onClick={() => {setAction('change');setError('')}}>تغيير PIN</button><button type="button" className={action === 'disable' ? 'primary' : 'outline'} onClick={() => {setAction('disable');setError('')}}>إلغاء القفل</button></div>
+    <form onSubmit={submit}><label>رمز PIN الحالي<input type="password" inputMode="numeric" maxLength={8} required value={currentPin} onChange={e=>setCurrentPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label>
+    {action === 'change' && <><label>رمز PIN الجديد<input type="password" inputMode="numeric" maxLength={8} required value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label><label>تأكيد الرمز الجديد<input type="password" inputMode="numeric" maxLength={8} required value={confirmPin} onChange={e=>setConfirmPin(e.target.value.replace(/\\D/g,'').slice(0,8))}/></label></>}
+    {error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy ? 'جارٍ الحفظ…' : action === 'change' ? 'حفظ الرمز الجديد' : 'إلغاء القفل على هذا الجهاز'}</button></form>
+    {action === 'disable' && <p className="form-error">سيصبح فتح الدفتر على هذا الجهاز دون PIN بعد التأكيد.</p>}
+  </section></div>
 }
 
 function DevicePinGate({ onUnlock, hasPin }: { onUnlock: () => void; hasPin: boolean }) {
@@ -495,6 +535,7 @@ export default function App() {
 
   if (!ready) return <main className="app"><section className="dialog"><h2>دفتر الديون</h2><p>جارٍ التحقق من تسجيل الدخول…</p></section></main>
   if (!user) return <main className="app" dir="rtl"><section className="dialog" style={{maxWidth:420,margin:'10vh auto'}}><h2>دفتر الديون</h2><p>سجّل الدخول بحسابك للمتابعة</p><form onSubmit={login}><label>البريد الإلكتروني<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} /></label><label>كلمة المرور<input type="password" required value={password} onChange={e=>setPassword(e.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy?'جارٍ الدخول…':'تسجيل الدخول'}</button></form></section></main>
-  if (!unlocked) return <DevicePinGate hasPin={hasPin} onUnlock={() => { setHasPin(true); setUnlocked(true) }} />
-  return <Dashboard user={user} />
+  if (!unlocked && hasPin) return <DevicePinGate hasPin={hasPin} onUnlock={() => setUnlocked(true)} />
+  if (!unlocked && !hasPin) return <DevicePinGate hasPin={false} onUnlock={() => { setHasPin(true); setUnlocked(true) }} />
+  return <Dashboard user={user} onLock={() => setUnlocked(false)} onPinStateChange={setHasPin} />
 }
