@@ -126,11 +126,15 @@ export async function putInTrash(record: Omit<TrashRecord, 'id' | 'deletedAt' | 
   })
   return id
 }
-export async function restoreTrash(record: TrashRecord, userId: string) {
+export async function restoreTrashWithId(record: TrashRecord, userId: string, operationId: string) {
   await runTransaction(db, async transaction => {
     const mainRef = sharedLedgerRef()
     const deletedRef = trashRef(record.id)
-    const [mainSnap, trashSnap] = await Promise.all([transaction.get(mainRef), transaction.get(deletedRef)])
+    const operationRef = doc(db, 'shops', shop, 'data', `operation-${operationId}`)
+    const [mainSnap, trashSnap, operationSnap] = await Promise.all([
+      transaction.get(mainRef), transaction.get(deletedRef), transaction.get(operationRef)
+    ])
+    if (operationSnap.exists()) return
     if (!trashSnap.exists()) throw new Error('TRASH_ITEM_NOT_FOUND')
     if (new Date(record.expiresAt).getTime() <= Date.now()) throw new Error('TRASH_ITEM_EXPIRED')
     const data = mainSnap.exists() ? mainSnap.data() : {}
@@ -141,7 +145,11 @@ export async function restoreTrash(record: TrashRecord, userId: string) {
     } else if (!entries.some((e: any) => e.id === record.entity.id)) entries.push(record.entity)
     transaction.set(mainRef, { customers, entries, updatedAt: new Date().toISOString(), updatedBy: userId }, { merge: true })
     transaction.delete(deletedRef)
+    transaction.set(operationRef, { id: operationId, type: 'trash-restore', trashId: record.id, appliedAt: new Date().toISOString(), appliedBy: userId })
   })
+}
+export async function restoreTrash(record: TrashRecord, userId: string) {
+  return restoreTrashWithId(record, userId, crypto.randomUUID())
 }
 export async function purgeExpiredTrash() {
   const records = await listTrash()
