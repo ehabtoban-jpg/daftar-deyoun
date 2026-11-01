@@ -1,4 +1,4 @@
-import { arrayUnion, collection, doc, getDocs, onSnapshot, orderBy, query, runTransaction, setDoc, Timestamp } from 'firebase/firestore'
+import { arrayUnion, collection, doc, getDocs, onSnapshot, orderBy, query, runTransaction, setDoc } from 'firebase/firestore'
 import { db } from './firebase'
 
 export type LedgerData = { customers: unknown[]; entries: unknown[]; updatedAt: string; updatedBy: string }
