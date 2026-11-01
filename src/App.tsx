@@ -160,7 +160,10 @@ function Dashboard({ user }: { user: User }) {
     }
     if (!window.confirm('هل تريد حذف هذا الزبون نهائياً؟')) return
     const id = selectedCustomer.id
-    const ok = await runLedgerMutation((cs, es) => ({ customers: cs.filter(c => c.id !== id), entries: es }))
+    const ok = await runLedgerMutation((cs, es) => {
+      if (es.some(e => e.customerId === id)) throw new Error('CUSTOMER_HAS_ENTRIES')
+      return { customers: cs.filter(c => c.id !== id), entries: es }
+    })
     if (ok) setSelected('')
   }
   const openEntryEdit = (entry: Entry) => {
@@ -171,8 +174,9 @@ function Dashboard({ user }: { user: User }) {
     const n = Number(amount)
     const current = entries.filter(e => e.customerId === (entries.find(x => x.id === editingId)?.customerId) && e.currency === currency && e.id !== editingId)
       .reduce((sum, e) => sum + (e.kind === 'debt' ? e.amount : -e.amount), 0)
-    if (!Number.isFinite(n) || n <= 0 || (kind === 'payment' && n > current)) {
-      window.alert(kind === 'payment' ? 'قيمة الدفعة أكبر من الرصيد المتبقي.' : 'أدخل مبلغاً صحيحاً أكبر من صفر.')
+    const resultingBalance = current + (kind === 'debt' ? n : -n)
+    if (!Number.isFinite(n) || n <= 0 || resultingBalance < 0) {
+      window.alert(resultingBalance < 0 ? 'لا يمكن أن تصبح الدفعات أكبر من مجموع الديون.' : 'أدخل مبلغاً صحيحاً أكبر من صفر.')
       return
     }
     const ok = await runLedgerMutation((cs, es) => ({
