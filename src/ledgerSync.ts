@@ -75,7 +75,7 @@ export async function updateSharedEntity(
       // Another device changed the same field: preserve its value and stop.
       if (JSON.stringify(current[key]) !== JSON.stringify(before[key]) &&
           JSON.stringify(current[key]) !== JSON.stringify(after[key])) {
-        throw new Error('ENTITY_CONFLICT')
+        throw new Error(`ENTITY_CONFLICT:${key}`)
       }
       if (Object.prototype.hasOwnProperty.call(after, key)) merged[key] = after[key]
       else delete merged[key]
