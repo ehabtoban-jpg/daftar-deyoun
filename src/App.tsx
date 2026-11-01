@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrashWithId, restoreTrash, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrashWithId, restoreTrashWithId, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
 import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
@@ -34,6 +34,21 @@ async function flushPendingTrashDeletes() {
       return { customers, entries: entries.filter(entry => entry.id !== record.entity.id) }
     }, userId, record.deletedAt, record.expiresAt)
     localStorage.setItem(PENDING_TRASH_DELETES_KEY, JSON.stringify(readPendingTrashDeletes().filter(row => row.record.id !== record.id)))
+  }
+}
+type PendingTrashRestore = { id: string; record: TrashRecord; userId: string }
+const PENDING_TRASH_RESTORES_KEY = 'dd-pending-trash-restores-v1'
+const readPendingTrashRestores = (): PendingTrashRestore[] => load<PendingTrashRestore[]>(PENDING_TRASH_RESTORES_KEY, [])
+const enqueuePendingTrashRestore = (item: PendingTrashRestore) => {
+  const queue = readPendingTrashRestores()
+  if (!queue.some(row => row.id === item.id)) localStorage.setItem(PENDING_TRASH_RESTORES_KEY, JSON.stringify([...queue, item]))
+}
+async function flushPendingTrashRestores() {
+  if (!navigator.onLine) return
+  for (const item of readPendingTrashRestores()) {
+    if (!navigator.onLine) return
+    await restoreTrashWithId(item.record, item.userId, item.id)
+    localStorage.setItem(PENDING_TRASH_RESTORES_KEY, JSON.stringify(readPendingTrashRestores().filter(row => row.id !== item.id)))
   }
 }
 type PendingEntityUpdate = { id: string; entityType: 'customer' | 'entry'; entityId: string; expected: Customer | Entry; replacement: Customer | Entry; userId: string; forceFields?: string[] }
@@ -185,7 +200,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       window.alert('تعذر إكمال الاستيراد. تحقق من اتصال الإنترنت وصلاحية جهات الاتصال ثم حاول مجدداً.')
     } finally { setContactsBusy(false) }
   }
-  const refreshTrash = async () => { try { const cloud = await listTrash(); const pending = readPendingTrashDeletes().map(item => item.record); const merged = new Map([...cloud, ...pending].map(item => [item.id, item])); setTrashItems([...merged.values()].sort((a,b) => b.deletedAt.localeCompare(a.deletedAt))) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
+  const refreshTrash = async () => { try { const cloud = await listTrash(); const pendingDeletes = readPendingTrashDeletes().map(item => item.record); const pendingRestores = new Set(readPendingTrashRestores().map(item => item.record.id)); const merged = new Map([...cloud, ...pendingDeletes].filter(item => !pendingRestores.has(item.id)).map(item => [item.id, item])); setTrashItems([...merged.values()].sort((a,b) => b.deletedAt.localeCompare(a.deletedAt))) } catch { setSyncStatus('تعذر تحميل سلة المحذوفات') } }
   const logActivity = async (action: string, description: string, details = '', customerName = '') => { try { await recordActivity({ action, description, actor, actorEmail: user.email || '', createdAt: new Date().toISOString(), details, customerName }); if (showActivity) await refreshActivity() } catch { setSyncStatus('تم الحفظ لكن تعذر تسجيل النشاط') } }
 
   useEffect(() => {
@@ -202,7 +217,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const markOnline = () => {
       if (!active) return
       setSyncStatus('عاد الإنترنت، جارٍ مزامنة العمليات المعلّقة…')
-      void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).then(() => {
+      void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).then(() => flushPendingTrashRestores()).then(() => {
         if (active) setSyncStatus('تمت مزامنة الإضافات المعلّقة؛ جارٍ تحديث الدفتر')
       }).catch(error => {
         const reason = error instanceof Error ? error.message : String(error)
@@ -212,7 +227,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     window.addEventListener('offline', markOffline)
     window.addEventListener('online', markOnline)
     if (!navigator.onLine) markOffline()
-    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).catch(error => {
+    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => flushPendingTrashDeletes()).then(() => flushPendingTrashRestores()).catch(error => {
       const reason = error instanceof Error ? error.message : String(error)
       setSyncStatus(`فشلت مزامنة التعديلات: ${reason}`)
     })
@@ -221,10 +236,15 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       // Keep queued offline edits visible when an older Firestore snapshot arrives.
       const pending = readPendingUpdates()
       const pendingDeletes = readPendingTrashDeletes().map(item => item.record)
+      const pendingRestores = readPendingTrashRestores().map(item => item.record)
       const deletedCustomerIds = new Set(pendingDeletes.filter(item => item.entityType === 'customer').map(item => item.entity.id))
       const deletedEntryIds = new Set(pendingDeletes.filter(item => item.entityType === 'entry').map(item => item.entity.id))
       const mergedCustomers = localCustomers.filter(customer => !deletedCustomerIds.has(customer.id))
       const mergedEntries = localEntries.filter(entry => !deletedEntryIds.has(entry.id) && !deletedCustomerIds.has(entry.customerId))
+      for (const item of pendingRestores) {
+        if (item.entityType === 'customer' && !mergedCustomers.some(customer => customer.id === item.entity.id)) mergedCustomers.push(item.entity as Customer)
+        if (item.entityType === 'entry' && !mergedEntries.some(entry => entry.id === item.entity.id)) mergedEntries.push(item.entity as Entry)
+      }
       for (const item of pending) {
         if (item.entityType === 'customer') {
           const index = mergedCustomers.findIndex(row => row.id === item.entityId)
@@ -443,17 +463,28 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     finally { setEditBusy(false) }
   }
   const restoreTrashItem = async (item: TrashRecord) => {
-    if (!navigator.onLine) { window.alert('استعادة العناصر تحتاج اتصالاً بالإنترنت.'); return }
+    if (new Date(item.expiresAt).getTime() <= Date.now()) { window.alert('انتهت مهلة الاستعادة لهذا العنصر.'); return }
     if (!window.confirm('هل تريد استعادة هذا العنصر إلى الدفتر؟')) return
     setEditBusy(true)
+    const operationId = crypto.randomUUID()
+    const queued: PendingTrashRestore = { id: operationId, record: item, userId: user.uid }
     try {
-      await restoreTrash(item, user.uid)
+      enqueuePendingTrashRestore(queued)
+      if (item.entityType === 'customer') {
+        const customer = item.entity as Customer
+        setCustomers(current => current.some(row => row.id === customer.id) ? current : [...current, customer])
+      } else {
+        const entry = item.entity as Entry
+        setEntries(current => current.some(row => row.id === entry.id) ? current : [...current, entry])
+      }
       await refreshTrash()
+      if (navigator.onLine) await flushPendingTrashRestores()
       const customerName = item.entityType === 'customer' ? (item.entity as Customer).name : customers.find(c => c.id === (item.entity as Entry).customerId)?.name || 'زبون غير معروف'
       void logActivity('استعادة من سلة المحذوفات', 'استعادة عنصر للزبون ' + customerName, '', customerName)
-      setSyncStatus('تمت استعادة العنصر')
+      setSyncStatus(navigator.onLine ? 'تمت استعادة العنصر' : 'تمت الاستعادة محلياً؛ ستتم مزامنتها عند عودة الإنترنت')
     } catch (error) {
-      window.alert(error instanceof Error && error.message === 'TRASH_ITEM_EXPIRED' ? 'انتهت مهلة الاستعادة لهذا العنصر.' : 'تعذرت الاستعادة. قد يكون العنصر موجوداً بالفعل أو انتهت مهلة الاستعادة.')
+      setSyncStatus('الاستعادة محفوظة محلياً؛ تعذرت المزامنة وستُعاد المحاولة عند الاتصال')
+      window.alert(error instanceof Error && error.message === 'TRASH_ITEM_EXPIRED' ? 'انتهت مهلة الاستعادة لهذا العنصر.' : 'تعذرت مزامنة الاستعادة الآن؛ بقي الطلب محفوظاً على هذا الجهاز.')
     } finally { setEditBusy(false) }
   }
   const selectedCustomer = customers.find(c => c.id === selected)
