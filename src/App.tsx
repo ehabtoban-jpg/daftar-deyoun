@@ -306,9 +306,65 @@ function Dashboard({ user }: { user: User }) {
   </main>
 }
 
+const DEVICE_PIN_KEY = 'dd-device-pin-v1'
+
+const toHex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+const fromHex = (value: string) => new Uint8Array(value.match(/.{1,2}/g)?.map(part => parseInt(part, 16)) || [])
+
+async function derivePinHash(pin: string, salt: Uint8Array) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 210000, hash: 'SHA-256' }, key, 256)
+  return toHex(new Uint8Array(bits))
+}
+
+function DevicePinGate({ onUnlock, hasPin }: { onUnlock: () => void; hasPin: boolean }) {
+  const [pin, setPin] = useState('')
+  const [confirmPin, setConfirmPin] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setError('')
+    if (!/^\d{4,8}$/.test(pin)) { setError('استخدم رمزاً من 4 إلى 8 أرقام.'); return }
+    if (!hasPin && pin !== confirmPin) { setError('الرمزان غير متطابقين.'); return }
+    setBusy(true)
+    try {
+      if (hasPin) {
+        const saved = localStorage.getItem(DEVICE_PIN_KEY)
+        if (!saved) throw new Error('PIN_NOT_FOUND')
+        const record = JSON.parse(saved) as { salt: string; hash: string }
+        const actual = await derivePinHash(pin, fromHex(record.salt))
+        if (actual !== record.hash) { setError('الرمز غير صحيح. حاول مرة أخرى.'); return }
+      } else {
+        const salt = crypto.getRandomValues(new Uint8Array(16))
+        const hash = await derivePinHash(pin, salt)
+        localStorage.setItem(DEVICE_PIN_KEY, JSON.stringify({ salt: toHex(salt), hash }))
+      }
+      onUnlock()
+    } catch {
+      setError('تعذر التحقق من الرمز على هذا المتصفح. تأكد من استخدام اتصال آمن ثم أعد المحاولة.')
+    } finally { setBusy(false) }
+  }
+
+  return <main className="app" dir="rtl"><section className="dialog" style={{maxWidth:420,margin:'10vh auto'}}>
+    <h2>قفل دفتر الديون</h2>
+    <p>{hasPin ? 'أدخل رمز هذا الجهاز لفتح الدفتر.' : 'أنشئ رمزاً محلياً لحماية فتح الدفتر على هذا الجهاز.'}</p>
+    <form onSubmit={submit}>
+      <label>رمز PIN (4 إلى 8 أرقام)<input autoFocus inputMode="numeric" pattern="[0-9]*" type="password" maxLength={8} required value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g, '').slice(0,8))}/></label>
+      {!hasPin && <label>تأكيد الرمز<input inputMode="numeric" pattern="[0-9]*" type="password" maxLength={8} required value={confirmPin} onChange={e=>setConfirmPin(e.target.value.replace(/\D/g, '').slice(0,8))}/></label>}
+      {error && <p className="form-error">{error}</p>}
+      <button className="primary full" disabled={busy}>{busy ? 'جارٍ التحقق…' : hasPin ? 'فتح الدفتر' : 'حفظ الرمز وفتح الدفتر'}</button>
+    </form>
+    <p style={{fontSize:12,marginTop:14}}>هذا الرمز خاص بملف المتصفح على هذا الجهاز، ولا تتم مزامنته مع الأجهزة الأخرى. لا تستخدمه بدلاً من كلمة مرور حسابك.</p>
+  </section></main>
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [ready, setReady] = useState(false)
+  const [unlocked, setUnlocked] = useState(false)
+  const [hasPin, setHasPin] = useState(() => Boolean(localStorage.getItem(DEVICE_PIN_KEY)))
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -316,6 +372,8 @@ export default function App() {
 
   useEffect(() => onAuthStateChanged(auth, value => {
     setUser(value)
+    setUnlocked(false)
+    setHasPin(Boolean(localStorage.getItem(DEVICE_PIN_KEY)))
     setReady(true)
   }), [])
 
@@ -334,5 +392,6 @@ export default function App() {
 
   if (!ready) return <main className="app"><section className="dialog"><h2>دفتر الديون</h2><p>جارٍ التحقق من تسجيل الدخول…</p></section></main>
   if (!user) return <main className="app" dir="rtl"><section className="dialog" style={{maxWidth:420,margin:'10vh auto'}}><h2>دفتر الديون</h2><p>سجّل الدخول بحسابك للمتابعة</p><form onSubmit={login}><label>البريد الإلكتروني<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} /></label><label>كلمة المرور<input type="password" required value={password} onChange={e=>setPassword(e.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy?'جارٍ الدخول…':'تسجيل الدخول'}</button></form></section></main>
+  if (!unlocked) return <DevicePinGate hasPin={hasPin} onUnlock={() => { setHasPin(true); setUnlocked(true) }} />
   return <Dashboard user={user} />
 }
