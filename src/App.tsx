@@ -470,6 +470,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     const queued: PendingTrashRestore = { id: operationId, record: item, userId: user.uid }
     try {
       enqueuePendingTrashRestore(queued)
+      setTrashItems(current => current.filter(row => row.id !== item.id))
       if (item.entityType === 'customer') {
         const customer = item.entity as Customer
         setCustomers(current => current.some(row => row.id === customer.id) ? current : [...current, customer])
