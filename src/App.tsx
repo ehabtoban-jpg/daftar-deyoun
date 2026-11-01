@@ -536,6 +536,7 @@ export default function App() {
   if (!ready) return <main className="app"><section className="dialog"><h2>دفتر الديون</h2><p>جارٍ التحقق من تسجيل الدخول…</p></section></main>
   if (!user) return <main className="app" dir="rtl"><section className="dialog" style={{maxWidth:420,margin:'10vh auto'}}><h2>دفتر الديون</h2><p>سجّل الدخول بحسابك للمتابعة</p><form onSubmit={login}><label>البريد الإلكتروني<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} /></label><label>كلمة المرور<input type="password" required value={password} onChange={e=>setPassword(e.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy?'جارٍ الدخول…':'تسجيل الدخول'}</button></form></section></main>
   if (!unlocked && hasPin) return <DevicePinGate hasPin={hasPin} onUnlock={() => setUnlocked(true)} />
-  if (!unlocked && !hasPin) return <DevicePinGate hasPin={false} onUnlock={() => { setHasPin(true); setUnlocked(true) }} />
+  if (!hasPin) return <Dashboard user={user} onPinStateChange={setHasPin} />
+  if (!unlocked) return <DevicePinGate hasPin onUnlock={() => setUnlocked(true)} />
   return <Dashboard user={user} onPinStateChange={setHasPin} />
 }
