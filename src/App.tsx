@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
-import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check } from 'lucide-react'
+import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger } from './ledgerSync'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2 } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -16,7 +16,9 @@ function Dashboard({ user }: { user: User }) {
   const [entries, setEntries] = useState<Entry[]>(() => load('dd-entries', []))
   const [actor, setActor] = useState(() => localStorage.getItem('dd-actor') || 'صاحب المحل')
   const [query, setQuery] = useState('')
-  const [modal, setModal] = useState<'customer' | 'entry' | null>(null)
+  const [modal, setModal] = useState<'customer' | 'entry' | 'editCustomer' | 'editEntry' | null>(null)
+  const [editingId, setEditingId] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
   const [selected, setSelected] = useState('')
   const [entryCustomerId, setEntryCustomerId] = useState('')
   const [name, setName] = useState('')
@@ -123,6 +125,66 @@ function Dashboard({ user }: { user: User }) {
     persistEntry({ id: crypto.randomUUID(), customerId: entryCustomerId, kind, amount: n, currency, note: note.trim(), actor, date: new Date().toISOString() })
     setAmount(''); setNote(''); setEntryError(''); setModal(null)
   }
+  const runLedgerMutation = async (mutate: (cs: Customer[], es: Entry[]) => { customers: Customer[]; entries: Entry[] }) => {
+    if (!navigator.onLine) { window.alert('التعديل والحذف يحتاجان اتصالاً بالإنترنت.'); return false }
+    setEditBusy(true)
+    try {
+      const next = await mutateSharedLedger((cs, es) => mutate(cs as Customer[], es as Entry[]), user.uid)
+      void next
+      // Read the committed state through the live Firestore listener.
+      setSyncStatus('تم حفظ التعديل ومزامنته')
+      return true
+    } catch {
+      setSyncStatus('تعذر حفظ التعديل؛ لم تتغير البيانات')
+      window.alert('تعذر حفظ التغيير. تحقق من الاتصال وحاول مرة أخرى.')
+      return false
+    } finally { setEditBusy(false) }
+  }
+  const openCustomerEdit = () => {
+    if (!selectedCustomer) return
+    setEditingId(selectedCustomer.id); setName(selectedCustomer.name); setPhone(selectedCustomer.phone)
+    setSelected(''); setModal('editCustomer')
+  }
+  const saveCustomerEdit = async () => {
+    const ok = await runLedgerMutation((cs, es) => ({
+      customers: cs.map(c => c.id === editingId ? { ...c, name: name.trim(), phone: phone.trim() } : c),
+      entries: es,
+    }))
+    if (ok) { setModal(null); setName(''); setPhone('') }
+  }
+  const deleteCustomer = async () => {
+    if (!selectedCustomer) return
+    if (entries.some(e => e.customerId === selectedCustomer.id)) {
+      window.alert('لا يمكن حذف زبون لديه حركات مالية. عالج حركاته أولاً.')
+      return
+    }
+    if (!window.confirm('هل تريد حذف هذا الزبون نهائياً؟')) return
+    const id = selectedCustomer.id
+    const ok = await runLedgerMutation((cs, es) => ({ customers: cs.filter(c => c.id !== id), entries: es }))
+    if (ok) setSelected('')
+  }
+  const openEntryEdit = (entry: Entry) => {
+    setEditingId(entry.id); setKind(entry.kind); setAmount(String(entry.amount)); setCurrency(entry.currency); setNote(entry.note)
+    setSelected(''); setModal('editEntry')
+  }
+  const saveEntryEdit = async () => {
+    const n = Number(amount)
+    const current = entries.filter(e => e.customerId === (entries.find(x => x.id === editingId)?.customerId) && e.currency === currency && e.id !== editingId)
+      .reduce((sum, e) => sum + (e.kind === 'debt' ? e.amount : -e.amount), 0)
+    if (!Number.isFinite(n) || n <= 0 || (kind === 'payment' && n > current)) {
+      window.alert(kind === 'payment' ? 'قيمة الدفعة أكبر من الرصيد المتبقي.' : 'أدخل مبلغاً صحيحاً أكبر من صفر.')
+      return
+    }
+    const ok = await runLedgerMutation((cs, es) => ({
+      customers: cs,
+      entries: es.map(e => e.id === editingId ? { ...e, kind, amount: n, currency, note: note.trim() } : e),
+    }))
+    if (ok) { setModal(null); setAmount(''); setNote('') }
+  }
+  const deleteEntry = async (id: string) => {
+    if (!window.confirm('هل تريد حذف هذه الحركة؟ سيتم تحديث الرصيد تلقائياً.')) return
+    await runLedgerMutation((cs, es) => ({ customers: cs, entries: es.filter(e => e.id !== id) }))
+  }
   const selectedCustomer = customers.find(c => c.id === selected)
   const customerRows = entries.filter(e => e.customerId === selected).sort((a,b) => b.date.localeCompare(a.date))
   const balanceFor = (cur: Currency) => customerRows.reduce((s,e) => s + (e.currency === cur ? (e.kind === 'debt' ? e.amount : -e.amount) : 0), 0)
@@ -142,11 +204,11 @@ function Dashboard({ user }: { user: User }) {
     </section>
     <footer><span>مسجل الدخول: {user.email}</span><span>{syncStatus}</span></footer>
 
-    {modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
-      {modal==='customer' ? <><label>اسم الزبون<input autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="مثلاً: أحمد محمد"/></label><label>رقم الهاتف (اختياري)<input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="05xxxxxxxx"/></label><button className="primary full" onClick={addCustomer} disabled={!name.trim()}><Check size={18}/> حفظ الزبون</button></> :
-      <><label>الزبون<select value={entryCustomerId} onChange={e=>setEntryCustomerId(e.target.value)}><option value="">اختر الزبون</option>{customers.map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>{entryError && <p className="form-error">{entryError}</p>}<div className="switch"><button className={kind==='debt'?'chosen':''} onClick={()=>setKind('debt')}><ArrowUpRight size={17}/> دين</button><button className={kind==='payment'?'chosen':''} onClick={()=>setKind('payment')}><ArrowDownLeft size={17}/> دفعة</button></div><label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00"/></label><label>العملة<select value={currency} onChange={e=>setCurrency(e.target.value as Currency)}><option value="USD">دولار أمريكي ($)</option><option value="SYP">ليرة سورية (ل.س)</option></select></label><label>ملاحظة (اختياري)<input value={note} onChange={e=>setNote(e.target.value)} placeholder="تفاصيل العملية"/></label><button className={kind==='debt'?'primary full':'success full'} onClick={addEntry} disabled={!entryCustomerId || !(Number(amount)>0)}><Check size={18}/> حفظ العملية</button></>}
+    {modal && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className="dialog"><button className="close" onClick={()=>setModal(null)}><X/></button><h3>{modal==='customer'?'إضافة زبون جديد':modal==='editCustomer'?'تعديل بيانات الزبون':modal==='editEntry'?'تعديل الحركة':kind==='debt'?'تسجيل دين جديد':'تسجيل دفعة'}</h3>
+      {modal==='customer' || modal==='editCustomer' ? <><label>اسم الزبون<input autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="مثلاً: أحمد محمد"/></label><label>رقم الهاتف (اختياري)<input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="05xxxxxxxx"/></label><button className="primary full" onClick={modal==='customer'?addCustomer:saveCustomerEdit} disabled={!name.trim() || editBusy}><Check size={18}/> {modal==='customer'?'حفظ الزبون':'حفظ التعديلات'}</button></> :
+      {modal==='editEntry' ? <><label>نوع الحركة<select value={kind} onChange={e=>setKind(e.target.value as 'debt'|'payment')}><option value="debt">دين</option><option value="payment">دفعة</option></select></label><label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>العملة<select value={currency} onChange={e=>setCurrency(e.target.value as Currency)}><option value="USD">دولار أمريكي ($)</option><option value="SYP">ليرة سورية (ل.س)</option></select></label><label>ملاحظة<input value={note} onChange={e=>setNote(e.target.value)}/></label><button className="primary full" onClick={saveEntryEdit} disabled={editBusy || !(Number(amount)>0)}><Check size={18}/> حفظ التعديلات</button></> : <><label>الزبون<select value={entryCustomerId} onChange={e=>setEntryCustomerId(e.target.value)}><option value="">اختر الزبون</option>{customers.map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>{entryError && <p className="form-error">{entryError}</p>}<div className="switch"><button className={kind==='debt'?'chosen':''} onClick={()=>setKind('debt')}><ArrowUpRight size={17}/> دين</button><button className={kind==='payment'?'chosen':''} onClick={()=>setKind('payment')}><ArrowDownLeft size={17}/> دفعة</button></div><label>المبلغ<input type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00"/></label><label>العملة<select value={currency} onChange={e=>setCurrency(e.target.value as Currency)}><option value="USD">دولار أمريكي ($)</option><option value="SYP">ليرة سورية (ل.س)</option></select></label><label>ملاحظة (اختياري)<input value={note} onChange={e=>setNote(e.target.value)} placeholder="تفاصيل العملية"/></label><button className={kind==='debt'?'primary full':'success full'} onClick={addEntry} disabled={!entryCustomerId || !(Number(amount)>0)}><Check size={18}/> حفظ العملية</button></>}}
     </section></div>}
-    {selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
+    {selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل</button><button className="outline" onClick={deleteCustomer}><Trash2 size={15}/> حذف</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><button className="outline" onClick={()=>openEntryEdit(e)} title="تعديل"><Pencil size={14}/></button><button className="outline" onClick={()=>deleteEntry(e.id)} title="حذف"><Trash2 size={14}/></button></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
   </main>
 }
 
