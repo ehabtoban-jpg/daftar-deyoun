@@ -64,8 +64,23 @@ export async function updateSharedEntity(
     const rows = Array.isArray(data[field]) ? [...data[field]] : []
     const index = rows.findIndex((row: any) => row?.id === id)
     if (index < 0) throw new Error('ENTITY_NOT_FOUND')
-    if (JSON.stringify(rows[index]) !== JSON.stringify(expected)) throw new Error('ENTITY_CONFLICT')
-    rows[index] = replacement
+
+    const current = rows[index] as Record<string, unknown>
+    const before = expected as Record<string, unknown>
+    const after = replacement as Record<string, unknown>
+    const merged = { ...current }
+    const changedKeys = new Set([...Object.keys(before), ...Object.keys(after)])
+    for (const key of changedKeys) {
+      if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue
+      // Another device changed the same field: preserve its value and stop.
+      if (JSON.stringify(current[key]) !== JSON.stringify(before[key]) &&
+          JSON.stringify(current[key]) !== JSON.stringify(after[key])) {
+        throw new Error('ENTITY_CONFLICT')
+      }
+      if (Object.prototype.hasOwnProperty.call(after, key)) merged[key] = after[key]
+      else delete merged[key]
+    }
+    rows[index] = merged
     transaction.update(ref, { [field]: rows, updatedAt: new Date().toISOString(), updatedBy: userId })
     transaction.set(operationRef, { id: operationId, type: 'entity-update', appliedAt: new Date().toISOString(), appliedBy: userId })
   })
