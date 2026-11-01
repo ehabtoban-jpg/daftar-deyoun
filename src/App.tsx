@@ -168,14 +168,18 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       setSyncStatus('عاد الإنترنت، جارٍ مزامنة العمليات المعلّقة…')
       void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).then(() => {
         if (active) setSyncStatus('تمت مزامنة الإضافات المعلّقة؛ جارٍ تحديث الدفتر')
-      }).catch(() => {
-        if (active) setSyncStatus('تعذرت مزامنة بعض الإضافات؛ ستبقى محفوظة لإعادة المحاولة')
+      }).catch(error => {
+        const reason = error instanceof Error ? error.message : String(error)
+        if (active) setSyncStatus(`فشلت المزامنة: ${reason}`)
       })
     }
     window.addEventListener('offline', markOffline)
     window.addEventListener('online', markOnline)
     if (!navigator.onLine) markOffline()
-    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).catch(() => setSyncStatus('هناك عمليات تعديل معلّقة أو متعارضة؛ لم تُستبدل بيانات السحابة'))
+    else void flushPendingLedgerWrites().then(() => flushPendingEntityUpdates()).catch(error => {
+      const reason = error instanceof Error ? error.message : String(error)
+      setSyncStatus(`فشلت مزامنة التعديلات: ${reason}`)
+    })
 
     const applyLocalLedger = (localCustomers: Customer[], localEntries: Entry[]) => {
       // Keep queued offline edits visible when an older Firestore snapshot arrives.
