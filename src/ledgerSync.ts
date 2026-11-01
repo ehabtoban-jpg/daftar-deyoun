@@ -1,4 +1,4 @@
-import { arrayUnion, collection, doc, getDocs, onSnapshot, orderBy, query, runTransaction, setDoc } from 'firebase/firestore'
+import { arrayUnion, collection, doc, getDocs, onSnapshot, orderBy, query, runTransaction, setDoc, writeBatch } from 'firebase/firestore'
 import { db } from './firebase'
 
 export type LedgerData = { customers: unknown[]; entries: unknown[]; updatedAt: string; updatedBy: string }
@@ -101,6 +101,27 @@ export async function exportLedgerBackup() {
   return { format: 'daftar-deyoun-backup-v1', exportedAt: new Date().toISOString(), customers: Array.isArray(main.customers) ? main.customers : [], entries: Array.isArray(main.entries) ? main.entries : [], activities, trash }
 }
 export async function restoreLedgerBackup(backup: any, userId: string) {
-  if (!backup || backup.format !== 'daftar-deyoun-backup-v1' || !Array.isArray(backup.customers) || !Array.isArray(backup.entries)) throw new Error('INVALID_BACKUP')
+  if (!backup || backup.format !== 'daftar-deyoun-backup-v1' || !Array.isArray(backup.customers) || !Array.isArray(backup.entries) || !Array.isArray(backup.activities) || !Array.isArray(backup.trash)) throw new Error('INVALID_BACKUP')
+  const current = await getDocs(dataCollection())
+  const operations: Array<{ ref: ReturnType<typeof doc>; data?: Record<string, unknown> }> = []
+  for (const item of current.docs) {
+    if (item.id.startsWith('activity-') || item.id.startsWith('trash-')) operations.push({ ref: item.ref })
+  }
+  for (const item of backup.activities) {
+    if (!item || typeof item.id !== 'string' || !item.id.startsWith('activity-')) throw new Error('INVALID_BACKUP')
+    operations.push({ ref: doc(db, 'shops', shop, 'data', item.id), data: { ...item, type: 'activity' } })
+  }
+  for (const item of backup.trash) {
+    if (!item || typeof item.id !== 'string' || !item.id.startsWith('trash-')) throw new Error('INVALID_BACKUP')
+    operations.push({ ref: doc(db, 'shops', shop, 'data', item.id), data: item })
+  }
   await saveSharedLedger(backup.customers, backup.entries, userId)
+  for (let i = 0; i < operations.length; i += 450) {
+    const batch = writeBatch(db)
+    for (const operation of operations.slice(i, i + 450)) {
+      if (operation.data) batch.set(operation.ref, operation.data)
+      else batch.delete(operation.ref)
+    }
+    await batch.commit()
+  }
 }
