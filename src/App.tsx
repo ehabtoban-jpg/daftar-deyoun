@@ -11,7 +11,7 @@ type Entry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount:
 const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumFractionDigits: 2 }).format(n) + (c === 'USD' ? ' $' : ' ل.س')
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
-function Dashboard({ user, onLock, onPinStateChange }: { user: User; onLock: () => void; onPinStateChange: (enabled: boolean) => void }) {
+function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (enabled: boolean) => void }) {
   const [customers, setCustomers] = useState<Customer[]>(() => load('dd-customers', []))
   const [entries, setEntries] = useState<Entry[]>(() => load('dd-entries', []))
   const [actor, setActor] = useState(() => localStorage.getItem('dd-actor') || 'صاحب المحل')
@@ -537,5 +537,5 @@ export default function App() {
   if (!user) return <main className="app" dir="rtl"><section className="dialog" style={{maxWidth:420,margin:'10vh auto'}}><h2>دفتر الديون</h2><p>سجّل الدخول بحسابك للمتابعة</p><form onSubmit={login}><label>البريد الإلكتروني<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} /></label><label>كلمة المرور<input type="password" required value={password} onChange={e=>setPassword(e.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary full" disabled={busy}>{busy?'جارٍ الدخول…':'تسجيل الدخول'}</button></form></section></main>
   if (!unlocked && hasPin) return <DevicePinGate hasPin={hasPin} onUnlock={() => setUnlocked(true)} />
   if (!unlocked && !hasPin) return <DevicePinGate hasPin={false} onUnlock={() => { setHasPin(true); setUnlocked(true) }} />
-  return <Dashboard user={user} onLock={() => setUnlocked(false)} onPinStateChange={setHasPin} />
+  return <Dashboard user={user} onPinStateChange={setHasPin} />
 }
