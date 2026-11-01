@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isShopMember(shopId) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/shops/$(shopId)/members/$(request.auth.uid));
+    }
+
+    match /shops/{shopId}/members/{memberId} {
+      // Each signed-in member can read only their own membership record.
+      allow read: if request.auth != null && request.auth.uid == memberId;
+      // Membership is provisioned by the project owner in Firebase Console.
+      allow create, update, delete: if false;
+    }
+
+    match /shops/{shopId}/data/{documentId} {
+      allow read, write: if isShopMember(shopId);
+    }
+
+    // Deny everything not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
