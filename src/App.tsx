@@ -530,8 +530,8 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
   const customerRows = entries.filter(e => e.customerId === selected).sort((a,b) => b.date.localeCompare(a.date))
   const balanceFor = (cur: Currency) => customerRows.reduce((s,e) => s + (e.currency === cur ? (e.kind === 'debt' ? e.amount : -e.amount) : 0), 0)
 
-  const exportCustomerStatement = () => {
-    if (!selectedCustomer) return
+  const buildCustomerStatementHtml = (): string | null => {
+    if (!selectedCustomer) return null
     const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     })[char] || char)
@@ -561,18 +561,13 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
         <td class="amount">${escapeHtml(money(runningSYP, 'SYP'))}</td>
       </tr>`
     }).join('')
-    const popup = window.open('', '_blank', 'width=1100,height=800')
-    if (!popup) {
-      window.alert('المتصفح منع فتح نافذة الكشف. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجدداً.')
-      return
-    }
     const generatedAt = new Date().toLocaleString('ar', { dateStyle: 'full', timeStyle: 'short' })
     const firstDate = chronological[0]?.date
     const lastDate = chronological[chronological.length - 1]?.date
     const period = firstDate && lastDate
       ? `من ${new Date(firstDate).toLocaleDateString('ar')} إلى ${new Date(lastDate).toLocaleDateString('ar')}`
       : 'لا توجد حركات مسجلة'
-    popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب - ${escapeHtml(selectedCustomer.name)}</title>
+    return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب - ${escapeHtml(selectedCustomer.name)}</title>
       <style>
         *{box-sizing:border-box}
         body{font-family:Tahoma,Arial,sans-serif;color:#172033;margin:28px;direction:rtl;background:#fff}
@@ -631,10 +626,85 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       ${rows ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان / الملاحظة</th><th>المسؤول</th><th>قيمة الحركة</th><th>الرصيد بالدولار بعد الحركة</th><th>الرصيد بالليرة بعد الحركة</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">لا توجد حركات مسجلة لهذا الزبون حتى تاريخ إصدار الكشف.</div>'}
       <section class="signatures"><div class="signature">توقيع المسؤول</div><div class="signature">توقيع الزبون</div></section>
       <footer class="footer"><span>تم إنشاء هذا الكشف من نظام دفتر الديون.</span><span>كشف حساب تفصيلي — ${escapeHtml(selectedCustomer.name)}</span></footer>
-      <script>window.onload=()=>setTimeout(()=>window.print(),350)<\/script>
-      </main></body></html>`)
-    popup.document.close()
+      </main></body></html>`
   }
+  const exportCustomerStatement = () => {
+    const html = buildCustomerStatementHtml()
+    if (!html) return
+    const popup = window.open('', '_blank', 'width=1100,height=800')
+    if (!popup) {
+      window.alert('المتصفح منع فتح نافذة الكشف. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجدداً.')
+      return
+    }
+    popup.document.write(html)
+    popup.document.close()
+    popup.onload = () => popup.print()
+    window.setTimeout(() => popup.print(), 500)
+  }
+
+  const shareCustomerStatementPdf = async () => {
+    const html = buildCustomerStatementHtml()
+    if (!html || !selectedCustomer) return
+    const safeName = selectedCustomer.name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'customer'
+    const fileName = `كشف-حساب-${safeName}.pdf`
+    const frame = document.createElement('iframe')
+    frame.setAttribute('aria-hidden', 'true')
+    frame.style.position = 'fixed'
+    frame.style.left = '-12000px'
+    frame.style.top = '0'
+    frame.style.width = '1200px'
+    frame.style.height = '1600px'
+    frame.style.border = '0'
+    document.body.appendChild(frame)
+    try {
+      const frameDoc = frame.contentDocument
+      if (!frameDoc) throw new Error('تعذر تجهيز صفحة كشف الحساب')
+      frameDoc.open()
+      frameDoc.write(html)
+      frameDoc.close()
+      await new Promise(resolve => window.setTimeout(resolve, 350))
+      // @ts-ignore html2pdf.js ships without TypeScript declarations.
+      const pdfModule = await import('html2pdf.js')
+      const html2pdf = (pdfModule as any).default || pdfModule
+      const pdfBlob: Blob = await html2pdf().set({
+        margin: [10, 10, 10, 10],
+        filename: fileName,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollY: 0 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+        pagebreak: { mode: ['css', 'legacy'] },
+      }).from(frameDoc.body).outputPdf('blob')
+      const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' })
+      const shareApi = navigator as Navigator & {
+        canShare?: (data: ShareData) => boolean
+        share?: (data: ShareData) => Promise<void>
+      }
+      if (shareApi.share && shareApi.canShare?.({ files: [pdfFile] })) {
+        try {
+          await shareApi.share({ files: [pdfFile], title: 'كشف حساب - ' + selectedCustomer.name, text: 'كشف حساب من دفتر الديون' })
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') return
+          throw error
+        }
+      } else {
+        const url = URL.createObjectURL(pdfBlob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = fileName
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        URL.revokeObjectURL(url)
+        window.alert('تم تنزيل ملف PDF. افتح WhatsApp وأرفق الملف من التنزيلات.')
+      }
+    } catch (error) {
+      console.error('PDF sharing failed:', error)
+      window.alert('تعذر إنشاء أو مشاركة ملف PDF. جرّب تنزيل الكشف من زر الطباعة، أو افتح التطبيق عبر اتصال آمن HTTPS على الهاتف.')
+    } finally {
+      frame.remove()
+    }
+  }
+
   const sendEntryWhatsAppReminder = (entry: Entry) => {
     const customer = customers.find(c => c.id === entry.customerId)
     if (!customer) return
@@ -727,7 +797,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       <button className="success full" onClick={()=>sendEntryWhatsAppReminder(reminderOffer)}><MessageCircle size={17}/> اضغط لتذكير عبر WhatsApp</button>
       <button className="outline full" onClick={()=>setReminderOffer(null)}>لاحقاً</button>
     </section></div>}
-    {!showActivity && !showTrash && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="outline" onClick={exportCustomerStatement}><FileText size={15}/> كشف حساب PDF</button><button className="success" onClick={sendWhatsAppReminder}><MessageCircle size={15}/> تذكير WhatsApp</button><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
+    {!showActivity && !showTrash && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="success" onClick={shareCustomerStatementPdf}><MessageCircle size={15}/> مشاركة PDF على WhatsApp</button><button className="outline" onClick={exportCustomerStatement}><FileText size={15}/> كشف حساب PDF</button><button className="success" onClick={sendWhatsAppReminder}><MessageCircle size={15}/> تذكير WhatsApp</button><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
   </main>
 }
 
