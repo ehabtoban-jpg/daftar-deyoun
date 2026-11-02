@@ -536,6 +536,15 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     })[char] || char)
     const chronological = [...customerRows].sort((a, b) => a.date.localeCompare(b.date))
+    const totals = chronological.reduce((result, entry) => {
+      const bucket = entry.currency === 'USD' ? result.USD : result.SYP
+      if (entry.kind === 'debt') bucket.debt += entry.amount
+      else bucket.paid += entry.amount
+      return result
+    }, {
+      USD: { debt: 0, paid: 0 },
+      SYP: { debt: 0, paid: 0 },
+    })
     let runningUSD = 0
     let runningSYP = 0
     const rows = chronological.map(entry => {
@@ -544,7 +553,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       else runningSYP += delta
       return `<tr>
         <td>${escapeHtml(new Date(entry.date).toLocaleString('ar', { dateStyle: 'medium', timeStyle: 'short' }))}</td>
-        <td>${entry.kind === 'debt' ? 'دين' : 'دفعة'}</td>
+        <td><span class="type ${entry.kind === 'debt' ? 'debt' : 'payment'}">${entry.kind === 'debt' ? 'دين' : 'دفعة'}</span></td>
         <td>${escapeHtml(entry.note || '—')}</td>
         <td>${escapeHtml(entry.actor || '—')}</td>
         <td class="amount">${entry.kind === 'debt' ? '+' : '−'}${escapeHtml(money(entry.amount, entry.currency))}</td>
@@ -558,24 +567,72 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       return
     }
     const generatedAt = new Date().toLocaleString('ar', { dateStyle: 'full', timeStyle: 'short' })
+    const firstDate = chronological[0]?.date
+    const lastDate = chronological[chronological.length - 1]?.date
+    const period = firstDate && lastDate
+      ? `من ${new Date(firstDate).toLocaleDateString('ar')} إلى ${new Date(lastDate).toLocaleDateString('ar')}`
+      : 'لا توجد حركات مسجلة'
     popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب - ${escapeHtml(selectedCustomer.name)}</title>
       <style>
-        *{box-sizing:border-box}body{font-family:Tahoma,Arial,sans-serif;color:#172033;margin:28px;direction:rtl}
-        h1{font-size:25px;margin:0 0 8px}p{margin:5px 0;color:#526078}.meta{display:flex;justify-content:space-between;gap:20px;border-bottom:2px solid #243b63;padding-bottom:16px}
-        .balances{display:flex;gap:14px;margin:20px 0}.balance{border:1px solid #d9e0ea;border-radius:10px;padding:14px;flex:1}.balance small{display:block;color:#64748b;margin-bottom:7px}.balance strong{font-size:20px}
-        table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12px}th,td{border:1px solid #dce2ea;padding:9px 7px;text-align:right}th{background:#eef2f7}
-        .amount{white-space:nowrap;font-weight:600}.footer{margin-top:22px;font-size:11px;color:#64748b}
-        @media print{body{margin:12mm}@page{size:landscape;margin:10mm}}
-      </style></head><body>
-      <div class="meta"><div><h1>كشف حساب زبون</h1><p>دفتر الديون</p><p>الاسم: <b>${escapeHtml(selectedCustomer.name)}</b></p><p>الهاتف: ${escapeHtml(selectedCustomer.phone || 'غير مسجل')}</p></div>
-      <div><p>تاريخ إصدار الكشف</p><b>${escapeHtml(generatedAt)}</b></div></div>
-      <div class="balances"><div class="balance"><small>الرصيد المتبقي بالدولار</small><strong>${escapeHtml(money(balanceFor('USD'), 'USD'))}</strong></div>
-      <div class="balance"><small>الرصيد المتبقي بالليرة السورية</small><strong>${escapeHtml(money(balanceFor('SYP'), 'SYP'))}</strong></div></div>
-      <h2 style="font-size:17px">تفاصيل الحركات</h2>
-      <table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المسؤول</th><th>قيمة الحركة</th><th>الرصيد بالدولار بعد الحركة</th><th>الرصيد بالليرة بعد الحركة</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="7" style="text-align:center">لا توجد حركات مسجلة</td></tr>'}</tbody></table>
-      <div class="footer">هذا الكشف مولّد من سجل الحركات المحفوظ في دفتر الديون.</div>
-      <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`)
+        *{box-sizing:border-box}
+        body{font-family:Tahoma,Arial,sans-serif;color:#172033;margin:28px;direction:rtl;background:#fff}
+        .page{max-width:1200px;margin:auto}
+        .brand{display:flex;align-items:center;gap:12px}
+        .brandmark{width:46px;height:46px;border-radius:13px;background:#20385f;color:#fff;display:grid;place-items:center;font-size:25px;font-weight:700}
+        .brand h1{font-size:24px;margin:0}.brand p{margin:4px 0 0;color:#64748b;font-size:12px}
+        .top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;border-bottom:3px solid #20385f;padding-bottom:17px}
+        .doc-title{text-align:left}.doc-title h2{font-size:20px;margin:0 0 7px}.doc-title p,.customer p{margin:5px 0;color:#526078;font-size:12px}
+        .customer{margin:18px 0;padding:13px 16px;background:#f5f7fb;border:1px solid #e1e7f0;border-radius:10px}
+        .customer strong{font-size:16px}.customer p{margin-top:7px}
+        .section-title{font-size:15px;margin:20px 0 10px}
+        .currency-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+        .currency-card{border:1px solid #dce3ed;border-radius:11px;overflow:hidden;break-inside:avoid}
+        .currency-head{background:#edf2f8;padding:10px 14px;font-weight:700;color:#20385f}
+        .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px}
+        .metric{padding:9px 7px;background:#fafbfd;border-radius:8px;min-width:0}
+        .metric small{display:block;color:#64748b;font-size:10px;margin-bottom:7px}
+        .metric strong{font-size:14px;overflow-wrap:anywhere}
+        .metric.balance{background:#eef5f0}.metric.balance strong{color:#17643a}
+        .table-wrap{width:100%;overflow:visible}
+        table{width:100%;border-collapse:collapse;margin-top:10px;font-size:11px}
+        th,td{border:1px solid #dce2ea;padding:9px 7px;text-align:right}
+        th{background:#edf2f8;color:#263a59;font-weight:700}
+        thead{display:table-header-group}tr{break-inside:avoid}
+        .amount{white-space:nowrap;font-weight:600}
+        .type{display:inline-block;padding:3px 7px;border-radius:20px;font-weight:700}
+        .type.debt{background:#fff0ef;color:#a3322b}.type.payment{background:#eaf6ee;color:#17643a}
+        .empty{text-align:center;color:#64748b;padding:22px;border:1px dashed #cbd5e1;border-radius:8px}
+        .signatures{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:38px;break-inside:avoid}
+        .signature{border-top:1px solid #9aa7b8;padding-top:9px;text-align:center;color:#526078;font-size:11px}
+        .footer{border-top:1px solid #e1e7f0;margin-top:24px;padding-top:10px;display:flex;justify-content:space-between;gap:15px;color:#64748b;font-size:10px}
+        @page{size:A4 landscape;margin:12mm}
+        @media print{body{margin:0}.page{max-width:none}.customer,.currency-card,.signatures{break-inside:avoid}button{display:none}}
+        @media screen and (max-width:700px){body{margin:12px}.top{flex-direction:column}.doc-title{text-align:right}.currency-grid{grid-template-columns:1fr}.metrics{gap:5px}.metric strong{font-size:12px}.table-wrap{overflow-x:auto}table{min-width:850px}}
+      </style></head><body><main class="page">
+      <header class="top">
+        <div class="brand"><div class="brandmark">د</div><div><h1>دفتر الديون</h1><p>إدارة الحسابات والذمم المالية</p></div></div>
+        <div class="doc-title"><h2>كشف حساب زبون</h2><p>تاريخ الإصدار: <b>${escapeHtml(generatedAt)}</b></p><p>فترة الحركات: <b>${escapeHtml(period)}</b></p></div>
+      </header>
+      <section class="customer"><strong>${escapeHtml(selectedCustomer.name)}</strong><p>رقم الهاتف: ${escapeHtml(selectedCustomer.phone || 'غير مسجل')}</p><p>عدد الحركات: ${chronological.length}</p></section>
+      <h3 class="section-title">ملخص الحساب</h3>
+      <section class="currency-grid">
+        <div class="currency-card"><div class="currency-head">الحساب بالدولار الأمريكي</div><div class="metrics">
+          <div class="metric"><small>إجمالي الديون</small><strong>${escapeHtml(money(totals.USD.debt, 'USD'))}</strong></div>
+          <div class="metric"><small>إجمالي المدفوعات</small><strong>${escapeHtml(money(totals.USD.paid, 'USD'))}</strong></div>
+          <div class="metric balance"><small>الرصيد النهائي</small><strong>${escapeHtml(money(balanceFor('USD'), 'USD'))}</strong></div>
+        </div></div>
+        <div class="currency-card"><div class="currency-head">الحساب بالليرة السورية</div><div class="metrics">
+          <div class="metric"><small>إجمالي الديون</small><strong>${escapeHtml(money(totals.SYP.debt, 'SYP'))}</strong></div>
+          <div class="metric"><small>إجمالي المدفوعات</small><strong>${escapeHtml(money(totals.SYP.paid, 'SYP'))}</strong></div>
+          <div class="metric balance"><small>الرصيد النهائي</small><strong>${escapeHtml(money(balanceFor('SYP'), 'SYP'))}</strong></div>
+        </div></div>
+      </section>
+      <h3 class="section-title">تفاصيل الحركات المالية</h3>
+      ${rows ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان / الملاحظة</th><th>المسؤول</th><th>قيمة الحركة</th><th>الرصيد بالدولار بعد الحركة</th><th>الرصيد بالليرة بعد الحركة</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">لا توجد حركات مسجلة لهذا الزبون حتى تاريخ إصدار الكشف.</div>'}
+      <section class="signatures"><div class="signature">توقيع المسؤول</div><div class="signature">توقيع الزبون</div></section>
+      <footer class="footer"><span>تم إنشاء هذا الكشف من نظام دفتر الديون.</span><span>كشف حساب تفصيلي — ${escapeHtml(selectedCustomer.name)}</span></footer>
+      <script>window.onload=()=>setTimeout(()=>window.print(),350)<\/script>
+      </main></body></html>`)
     popup.document.close()
   }
   const sendEntryWhatsAppReminder = (entry: Entry) => {
