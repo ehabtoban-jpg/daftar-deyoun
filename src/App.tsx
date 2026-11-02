@@ -368,8 +368,24 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     setEditBusy(true)
     try {
       if (navigator.onLine) {
-        await updateSharedEntity(operation.id, entityType, replacement.id, editingOriginal, replacement, user.uid)
-        setSyncStatus('تم حفظ التعديل ومزامنته')
+        try {
+          await updateSharedEntity(operation.id, entityType, replacement.id, editingOriginal, replacement, user.uid)
+          setSyncStatus('تم حفظ التعديل ومزامنته')
+        } catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : ''
+          const message = error instanceof Error ? error.message : String(error)
+          const networkFailure = /unavailable|deadline-exceeded|network-request-failed|webchannel/i.test(code + ' ' + message)
+          if (!networkFailure) throw error
+          // navigator.onLine can remain true when Wi-Fi/mobile data is disabled.
+          // Keep the user's edit locally and retry it when connectivity returns.
+          enqueueEntityUpdate(operation)
+          const nextCustomers = entityType === 'customer' ? customers.map(item => item.id === replacement.id ? replacement as Customer : item) : customers
+          const nextEntries = entityType === 'entry' ? entries.map(item => item.id === replacement.id ? replacement as Entry : item) : entries
+          setCustomers(nextCustomers); setEntries(nextEntries)
+          localStorage.setItem('dd-customers', JSON.stringify(nextCustomers))
+          localStorage.setItem('dd-entries', JSON.stringify(nextEntries))
+          setSyncStatus('حُفظ التعديل محلياً؛ ينتظر عودة الاتصال والمزامنة')
+        }
       } else {
         enqueueEntityUpdate(operation)
         const nextCustomers = entityType === 'customer' ? customers.map(item => item.id === replacement.id ? replacement as Customer : item) : customers
@@ -381,8 +397,9 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       }
       return true
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       setSyncStatus('لم يُحفظ التعديل بسبب تعارض أو مشكلة اتصال')
-      window.alert(error instanceof Error && error.message === 'ENTITY_CONFLICT' ? 'هذا السجل تغيّر على الجهاز الآخر. لم نعتمد تعديلك؛ حدّث البيانات وافتح التعديل من جديد.' : 'تعذر حفظ التغيير. لم نعتمد التعديل.')
+      window.alert(message.startsWith('ENTITY_CONFLICT') ? 'هذا السجل تغيّر على الجهاز الآخر. لم نعتمد تعديلك؛ حدّث البيانات وافتح التعديل من جديد.' : 'تعذر حفظ التغيير. لم نعتمد التعديل.')
       return false
     } finally { setEditBusy(false) }
   }
