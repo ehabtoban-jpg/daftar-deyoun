@@ -397,9 +397,13 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       }
       return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setSyncStatus('لم يُحفظ التعديل بسبب تعارض أو مشكلة اتصال')
-      window.alert(message.startsWith('ENTITY_CONFLICT') ? 'هذا السجل تغيّر على الجهاز الآخر. لم نعتمد تعديلك؛ حدّث البيانات وافتح التعديل من جديد.' : 'تعذر حفظ التغيير. لم نعتمد التعديل.')
+      const info = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown; name?: unknown } : null
+      const code = info?.code == null ? '' : String(info.code)
+      const message = info?.message == null ? String(error) : String(info.message)
+      const detail = [info?.name ? String(info.name) : '', code, message].filter(Boolean).join(' | ')
+      console.error('دفتر الديون: فشل حفظ التعديل', error)
+      setSyncStatus(`فشل الحفظ [${code || 'بلا رمز'}]: ${message}`)
+      window.alert(message.startsWith('ENTITY_CONFLICT') ? 'هذا السجل تغيّر على الجهاز الآخر. لم نعتمد تعديلك؛ حدّث البيانات وافتح التعديل من جديد.' : `تفاصيل خطأ الحفظ:\n${detail || 'خطأ غير معروف'}`)
       return false
     } finally { setEditBusy(false) }
   }
