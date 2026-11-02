@@ -638,7 +638,6 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     }
     popup.document.write(html)
     popup.document.close()
-    popup.onload = () => popup.print()
     window.setTimeout(() => popup.print(), 500)
   }
 
