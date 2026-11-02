@@ -374,7 +374,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
         } catch (error) {
           const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : ''
           const message = error instanceof Error ? error.message : String(error)
-          const networkFailure = /unavailable|deadline-exceeded|network-request-failed|webchannel/i.test(code + ' ' + message)
+          const networkFailure = /unavailable|deadline-exceeded|network-request-failed|webchannel|offline|network|fetch|transport|timed? ?out|timeout|could not reach|failed to get document|connection/i.test(code + ' ' + message)
           if (!networkFailure) throw error
           // navigator.onLine can remain true when Wi-Fi/mobile data is disabled.
           // Keep the user's edit locally and retry it when connectivity returns.
