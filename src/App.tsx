@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
 import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, mutateSharedLedger } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2 } from 'lucide-react'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, Download, Upload } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -10,6 +10,23 @@ type Entry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount:
 
 const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumFractionDigits: 2 }).format(n) + (c === 'USD' ? ' $' : ' ل.س')
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
+
+const isCustomer = (value: unknown): value is Customer => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.id === 'string' && typeof item.name === 'string'
+    && typeof item.phone === 'string' && typeof item.createdAt === 'string'
+}
+const isEntry = (value: unknown): value is Entry => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.id === 'string' && typeof item.customerId === 'string'
+    && (item.kind === 'debt' || item.kind === 'payment')
+    && typeof item.amount === 'number' && Number.isFinite(item.amount) && item.amount > 0
+    && (item.currency === 'USD' || item.currency === 'SYP')
+    && typeof item.note === 'string' && typeof item.actor === 'string'
+    && typeof item.date === 'string'
+}
 
 function Dashboard({ user }: { user: User }) {
   const [customers, setCustomers] = useState<Customer[]>(() => load('dd-customers', []))
@@ -30,6 +47,8 @@ function Dashboard({ user }: { user: User }) {
   const [filter, setFilter] = useState<'all' | 'owing'>('all')
   const [entryError, setEntryError] = useState('')
   const [syncStatus, setSyncStatus] = useState('جارٍ الاتصال بالسحابة…')
+  const [backupBusy, setBackupBusy] = useState(false)
+  const backupInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     let active = true
@@ -102,6 +121,64 @@ function Dashboard({ user }: { user: User }) {
       .then(() => setSyncStatus('متصل ومتزامن'))
       .catch(() => setSyncStatus(navigator.onLine ? 'تعذر تأكيد المزامنة؛ ستتم إعادة المحاولة عند الاتصال' : 'حُفظت الحركة محلياً، بانتظار عودة الإنترنت'))
   }
+  const exportBackup = () => {
+    const backup = {
+      app: 'daftar-deyoun',
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      exportedBy: user.email || '',
+      data: { customers, entries },
+    }
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `daftar-deyoun-backup-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const restoreBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      setBackupBusy(true)
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!parsed || typeof parsed !== 'object') throw new Error('INVALID_BACKUP')
+      const root = parsed as Record<string, unknown>
+      const data = root.data as Record<string, unknown> | undefined
+      if (root.app !== 'daftar-deyoun' || root.formatVersion !== 1 || !data
+        || !Array.isArray(data.customers) || !Array.isArray(data.entries)
+        || !data.customers.every(isCustomer) || !data.entries.every(isEntry)) {
+        throw new Error('INVALID_BACKUP')
+      }
+      const restoredCustomers = data.customers as Customer[]
+      const restoredEntries = data.entries as Entry[]
+      const customerIds = new Set(restoredCustomers.map(customer => customer.id))
+      if (restoredEntries.some(entry => !customerIds.has(entry.customerId))) throw new Error('INVALID_BACKUP')
+      if (!window.confirm(`سيتم استبدال الدفتر الحالي على جميع الأجهزة بالنسخة المختارة ( ${restoredCustomers.length} زبون و${restoredEntries.length} حركة). لا يمكن التراجع عن هذا الاستبدال. هل تريد المتابعة؟`)) return
+
+      await saveSharedLedger(restoredCustomers, restoredEntries, user.uid)
+      setCustomers(restoredCustomers)
+      setEntries(restoredEntries)
+      localStorage.setItem('dd-customers', JSON.stringify(restoredCustomers))
+      localStorage.setItem('dd-entries', JSON.stringify(restoredEntries))
+      setSyncStatus('تمت استعادة النسخة ومزامنتها')
+      window.alert('تمت استعادة النسخة الاحتياطية بنجاح.')
+    } catch (error) {
+      const message = error instanceof Error && error.message === 'INVALID_BACKUP'
+        ? 'الملف غير صالح أو لا ينتمي إلى نسخة دفتر الديون.'
+        : 'تعذرت استعادة النسخة. تحقق من اتصال الإنترنت وحاول مرة أخرى.'
+      window.alert(message)
+      setSyncStatus('تعذرت استعادة النسخة الاحتياطية')
+    } finally {
+      setBackupBusy(false)
+      event.target.value = ''
+    }
+  }
+
   const balances = useMemo(() => customers.map(c => {
     const rows = entries.filter(e => e.customerId === c.id)
     const balance = (cur: Currency) => rows.reduce((s, e) => s + (e.currency === cur ? (e.kind === 'debt' ? e.amount : -e.amount) : 0), 0)
@@ -202,6 +279,11 @@ function Dashboard({ user }: { user: User }) {
       <article className="stat"><span className="stat-icon amber"><Users size={20}/></span><p>الزبائن عليهم رصيد</p><strong>{balances.filter(c => c.usd > 0 || c.syp > 0).length}</strong></article>
     </section>
     <section className="actions"><button className="primary" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('debt'); setEntryError(''); setModal('entry')}}><Plus size={18}/> تسجيل دين</button><button className="success" onClick={() => {setSelected(''); setEntryCustomerId(''); setKind('payment'); setEntryError(''); setModal('entry')}}><ArrowDownLeft size={18}/> تسجيل دفعة</button><button className="outline" onClick={() => setModal('customer')}><Users size={18}/> إضافة زبون</button></section>
+    <section className="actions backup-actions">
+      <button className="outline" onClick={exportBackup} disabled={backupBusy}><Download size={17}/> تنزيل نسخة احتياطية</button>
+      <button className="outline" onClick={() => backupInputRef.current?.click()} disabled={backupBusy}><Upload size={17}/> استعادة نسخة احتياطية</button>
+      <input ref={backupInputRef} type="file" accept=".json,application/json" onChange={restoreBackup} style={{ display: 'none' }} />
+    </section>
     <section className="panel"><div className="panel-head"><div><h3>الزبائن</h3><p>كل حساباتك في قائمة واحدة</p></div><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>الكل</button><button className={filter==='owing'?'active':''} onClick={()=>setFilter('owing')}>عليهم ديون</button></div></div>
       <div className="search"><Search size={18}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="ابحث باسم الزبون أو رقم الهاتف"/></div>
       {shown.length ? <div className="customer-list">{shown.map(c=><button className="customer" key={c.id} onClick={()=>{if(!modal)setSelected(c.id)}} disabled={modal !== null}><span className="avatar">{c.name.slice(0,1)}</span><span className="customer-info"><b>{c.name}</b><small>{c.phone || 'لا يوجد رقم هاتف'}</small></span><span className="customer-bal"><b>{money(c.usd,'USD')}</b><small>{money(c.syp,'SYP')}</small></span><span className="chevron">‹</span></button>)}</div> : <div className="empty"><Users size={30}/><b>ما في زبائن بهالقائمة</b><span>أضف أول زبون وابدأ تسجيل الحسابات.</span><button onClick={()=>setModal('customer')}>إضافة زبون</button></div>}
