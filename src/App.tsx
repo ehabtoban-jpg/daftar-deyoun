@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
 import { auth } from './firebase'
 import { watchSharedLedger, saveSharedLedger, appendSharedCustomer, appendSharedEntry, updateSharedEntity, recordActivity, listActivity, listTrash, putInTrashWithId, restoreTrashWithId, exportLedgerBackup, restoreLedgerBackup, purgeExpiredTrash, type ActivityEvent, type TrashRecord } from './ledgerSync'
-import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings } from 'lucide-react'
+import { Users, Wallet, Search, Plus, ArrowDownLeft, ArrowUpRight, X, Check, Pencil, Trash2, RotateCcw, Archive, Download, Upload, MessageCircle, ShieldCheck, Activity, Settings, FileText } from 'lucide-react'
 
 type Currency = 'USD' | 'SYP'
 type Customer = { id: string; name: string; phone: string; createdAt: string }
@@ -529,6 +529,55 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
   const selectedCustomer = customers.find(c => c.id === selected)
   const customerRows = entries.filter(e => e.customerId === selected).sort((a,b) => b.date.localeCompare(a.date))
   const balanceFor = (cur: Currency) => customerRows.reduce((s,e) => s + (e.currency === cur ? (e.kind === 'debt' ? e.amount : -e.amount) : 0), 0)
+
+  const exportCustomerStatement = () => {
+    if (!selectedCustomer) return
+    const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[char] || char)
+    const chronological = [...customerRows].sort((a, b) => a.date.localeCompare(b.date))
+    let runningUSD = 0
+    let runningSYP = 0
+    const rows = chronological.map(entry => {
+      const delta = entry.kind === 'debt' ? entry.amount : -entry.amount
+      if (entry.currency === 'USD') runningUSD += delta
+      else runningSYP += delta
+      return `<tr>
+        <td>${escapeHtml(new Date(entry.date).toLocaleString('ar', { dateStyle: 'medium', timeStyle: 'short' }))}</td>
+        <td>${entry.kind === 'debt' ? 'دين' : 'دفعة'}</td>
+        <td>${escapeHtml(entry.note || '—')}</td>
+        <td>${escapeHtml(entry.actor || '—')}</td>
+        <td class="amount">${entry.kind === 'debt' ? '+' : '−'}${escapeHtml(money(entry.amount, entry.currency))}</td>
+        <td class="amount">${escapeHtml(money(runningUSD, 'USD'))}</td>
+        <td class="amount">${escapeHtml(money(runningSYP, 'SYP'))}</td>
+      </tr>`
+    }).join('')
+    const popup = window.open('', '_blank', 'width=1100,height=800')
+    if (!popup) {
+      window.alert('المتصفح منع فتح نافذة الكشف. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجدداً.')
+      return
+    }
+    const generatedAt = new Date().toLocaleString('ar', { dateStyle: 'full', timeStyle: 'short' })
+    popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب - ${escapeHtml(selectedCustomer.name)}</title>
+      <style>
+        *{box-sizing:border-box}body{font-family:Tahoma,Arial,sans-serif;color:#172033;margin:28px;direction:rtl}
+        h1{font-size:25px;margin:0 0 8px}p{margin:5px 0;color:#526078}.meta{display:flex;justify-content:space-between;gap:20px;border-bottom:2px solid #243b63;padding-bottom:16px}
+        .balances{display:flex;gap:14px;margin:20px 0}.balance{border:1px solid #d9e0ea;border-radius:10px;padding:14px;flex:1}.balance small{display:block;color:#64748b;margin-bottom:7px}.balance strong{font-size:20px}
+        table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12px}th,td{border:1px solid #dce2ea;padding:9px 7px;text-align:right}th{background:#eef2f7}
+        .amount{white-space:nowrap;font-weight:600}.footer{margin-top:22px;font-size:11px;color:#64748b}
+        @media print{body{margin:12mm}@page{size:landscape;margin:10mm}}
+      </style></head><body>
+      <div class="meta"><div><h1>كشف حساب زبون</h1><p>دفتر الديون</p><p>الاسم: <b>${escapeHtml(selectedCustomer.name)}</b></p><p>الهاتف: ${escapeHtml(selectedCustomer.phone || 'غير مسجل')}</p></div>
+      <div><p>تاريخ إصدار الكشف</p><b>${escapeHtml(generatedAt)}</b></div></div>
+      <div class="balances"><div class="balance"><small>الرصيد المتبقي بالدولار</small><strong>${escapeHtml(money(balanceFor('USD'), 'USD'))}</strong></div>
+      <div class="balance"><small>الرصيد المتبقي بالليرة السورية</small><strong>${escapeHtml(money(balanceFor('SYP'), 'SYP'))}</strong></div></div>
+      <h2 style="font-size:17px">تفاصيل الحركات</h2>
+      <table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المسؤول</th><th>قيمة الحركة</th><th>الرصيد بالدولار بعد الحركة</th><th>الرصيد بالليرة بعد الحركة</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" style="text-align:center">لا توجد حركات مسجلة</td></tr>'}</tbody></table>
+      <div class="footer">هذا الكشف مولّد من سجل الحركات المحفوظ في دفتر الديون.</div>
+      <script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`)
+    popup.document.close()
+  }
   const sendEntryWhatsAppReminder = (entry: Entry) => {
     const customer = customers.find(c => c.id === entry.customerId)
     if (!customer) return
@@ -621,7 +670,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       <button className="success full" onClick={()=>sendEntryWhatsAppReminder(reminderOffer)}><MessageCircle size={17}/> اضغط لتذكير عبر WhatsApp</button>
       <button className="outline full" onClick={()=>setReminderOffer(null)}>لاحقاً</button>
     </section></div>}
-    {!showActivity && !showTrash && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="success" onClick={sendWhatsAppReminder}><MessageCircle size={15}/> تذكير WhatsApp</button><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
+    {!showActivity && !showTrash && selectedCustomer && <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected('')}}><section className="dialog detail"><button className="close" onClick={()=>setSelected('')}><X/></button><div className="detail-person"><span className="avatar big">{selectedCustomer.name.slice(0,1)}</span><div><h3>{selectedCustomer.name}</h3><p>{selectedCustomer.phone || 'لا يوجد رقم هاتف'}</p></div></div><div className="customer-actions"><button className="outline" onClick={exportCustomerStatement}><FileText size={15}/> كشف حساب PDF</button><button className="success" onClick={sendWhatsAppReminder}><MessageCircle size={15}/> تذكير WhatsApp</button><button className="outline" onClick={openCustomerEdit}><Pencil size={15}/> تعديل بيانات الزبون</button><button className="outline danger-action" onClick={deleteCustomer}><Trash2 size={15}/> حذف الزبون</button></div><div className="detail-bal"><div><small>الرصيد بالدولار</small><b>{money(balanceFor('USD'),'USD')}</b></div><div><small>الرصيد بالليرة</small><b>{money(balanceFor('SYP'),'SYP')}</b></div></div><div className="detail-head"><b>سجل الحركات</b><button onClick={()=>{setKind('debt');setEntryError('');setEntryCustomerId(selectedCustomer.id);setSelected('');setModal('entry')}}><Plus size={16}/> حركة جديدة</button></div>{customerRows.length ? customerRows.map(e=><div className="entry" key={e.id}><span className={e.kind==='debt'?'debt-dot':'pay-dot'}>{e.kind==='debt'?<ArrowUpRight size={16}/>:<ArrowDownLeft size={16}/>}</span><span className="entry-info"><b>{e.kind==='debt'?'دين':'دفعة'}{e.note?' – '+e.note:''}</b><small>{new Date(e.date).toLocaleString('ar')} · {e.actor}</small></span><strong className={e.kind==='debt'?'red':'green-text'}>{e.kind==='debt'?'+':'−'}{money(e.amount,e.currency)}</strong><div className="entry-actions"><button className="outline" onClick={()=>openEntryEdit(e)}><Pencil size={13}/> تعديل</button><button className="outline danger-action" onClick={()=>deleteEntry(e.id)}><Trash2 size={13}/> حذف</button></div></div>) : <div className="empty compact">لا توجد حركات مسجلة بعد</div>}</section></div>}
   </main>
 }
 
