@@ -11,6 +11,23 @@ type Entry = { id: string; customerId: string; kind: 'debt' | 'payment'; amount:
 const money = (n: number, c: Currency) => new Intl.NumberFormat('ar', { maximumFractionDigits: 2 }).format(n) + (c === 'USD' ? ' $' : ' ل.س')
 const load = <T,>(key: string, fallback: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) as T : fallback } catch { return fallback } }
 
+const createId = () => {
+  // randomUUID is restricted to secure contexts in some browsers; getRandomValues also works on localhost variants.
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi?.getRandomValues) {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  // Last-resort fallback for older or restricted browser environments.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
+    const value = Math.floor(Math.random() * 16)
+    return (char === 'x' ? value : (value & 0x3) | 0x8).toString(16)
+  })
+}
+
 type PendingLedgerWrite = { id: string; type: 'customer' | 'entry'; value: Customer | Entry; userId: string }
 type PendingTrashDelete = { record: TrashRecord; userId: string }
 const PENDING_TRASH_DELETES_KEY = 'dd-pending-trash-deletes-v1'
@@ -181,7 +198,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
         const normalizedPhone = normalizePhone(contactPhone)
         const normalizedName = contactName.toLocaleLowerCase()
         if ((normalizedPhone && knownPhones.has(normalizedPhone)) || (!normalizedPhone && knownNames.has(normalizedName))) continue
-        additions.push({ id: crypto.randomUUID(), name: contactName, phone: contactPhone, createdAt: new Date().toISOString() })
+        additions.push({ id: createId(), name: contactName, phone: contactPhone, createdAt: new Date().toISOString() })
         if (normalizedPhone) knownPhones.add(normalizedPhone)
         knownNames.add(normalizedName)
       }
@@ -346,7 +363,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
   const shown = balances.filter(c => (filter === 'all' || c.usd > 0 || c.syp > 0) && (c.name.includes(query) || c.phone.includes(query)))
   const addCustomer = () => {
     if (!name.trim()) return
-    persistCustomer({ id: crypto.randomUUID(), name: name.trim(), phone: phone.trim(), createdAt: new Date().toISOString() })
+    persistCustomer({ id: createId(), name: name.trim(), phone: phone.trim(), createdAt: new Date().toISOString() })
     setName(''); setPhone(''); setModal(null)
   }
   const addEntry = () => {
@@ -357,14 +374,14 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
       if (n > current) { setEntryError('قيمة الدفعة أكبر من الرصيد المستحق بهذه العملة.'); return }
     }
     setEntryError('')
-    const savedEntry: Entry = { id: crypto.randomUUID(), customerId: entryCustomerId, kind, amount: n, currency, note: note.trim(), actor, date: new Date().toISOString() }
+    const savedEntry: Entry = { id: createId(), customerId: entryCustomerId, kind, amount: n, currency, note: note.trim(), actor, date: new Date().toISOString() }
     persistEntry(savedEntry)
     setAmount(''); setNote(''); setEntryError(''); setModal(null)
     setReminderOffer(savedEntry)
   }
   const runEntityUpdate = async (entityType: 'customer' | 'entry', replacement: Customer | Entry) => {
     if (!editingOriginal || editingOriginal.id !== replacement.id) return false
-    const operation: PendingEntityUpdate = { id: crypto.randomUUID(), entityType, entityId: replacement.id, expected: editingOriginal, replacement, userId: user.uid }
+    const operation: PendingEntityUpdate = { id: createId(), entityType, entityId: replacement.id, expected: editingOriginal, replacement, userId: user.uid }
     setEditBusy(true)
     try {
       if (navigator.onLine) {
@@ -428,7 +445,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     setEditBusy(true)
     const target = selectedCustomer
     const now = new Date()
-    const record: TrashRecord = { id: crypto.randomUUID(), entityType: 'customer', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
+    const record: TrashRecord = { id: createId(), entityType: 'customer', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
     try {
       enqueuePendingTrashDelete({ record, userId: user.uid })
       const nextCustomers = customers.filter(customer => customer.id !== target.id)
@@ -471,7 +488,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     setEditBusy(true)
     const customerName = customers.find(c => c.id === target.customerId)?.name || 'زبون غير معروف'
     const now = new Date()
-    const record: TrashRecord = { id: crypto.randomUUID(), entityType: 'entry', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
+    const record: TrashRecord = { id: createId(), entityType: 'entry', entity: target, deletedBy: actor, deletedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 86400000).toISOString() }
     try {
       enqueuePendingTrashDelete({ record, userId: user.uid })
       const nextEntries = entries.filter(entry => entry.id !== id)
@@ -487,7 +504,7 @@ function Dashboard({ user, onPinStateChange }: { user: User; onPinStateChange: (
     if (new Date(item.expiresAt).getTime() <= Date.now()) { window.alert('انتهت مهلة الاستعادة لهذا العنصر.'); return }
     if (!window.confirm('هل تريد استعادة هذا العنصر إلى الدفتر؟')) return
     setEditBusy(true)
-    const operationId = crypto.randomUUID()
+    const operationId = createId()
     const queued: PendingTrashRestore = { id: operationId, record: item, userId: user.uid }
     try {
       enqueuePendingTrashRestore(queued)
