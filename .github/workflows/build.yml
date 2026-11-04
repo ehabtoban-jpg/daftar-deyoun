@@ -1,16 +1,65 @@
-name: Build check
+name: Build and Firestore security tests
+
 on:
   push:
-    branches: [main]
+    branches: [main, security-staging]
   pull_request:
-    branches: [main]
+    branches: [main, security-staging]
+
+permissions:
+  contents: read
+
 jobs:
-  build:
+  build-and-rules-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
-      - run: npm run build
+          cache: npm
+
+      - name: Set up Java for Firebase Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start Firestore Emulator
+        shell: bash
+        run: |
+          npx --yes firebase-tools@15.34.2 emulators:start --only firestore --project demo-daftar-deyoun > "$RUNNER_TEMP/firestore-emulator.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/firestore-emulator.pid"
+
+          for attempt in {1..60}; do
+            if node -e "const net = require('node:net'); const socket = net.connect(8080, '127.0.0.1'); socket.on('connect', () => { socket.end(); process.exit(0); }); socket.on('error', () => process.exit(1));"; then
+              echo "Firestore Emulator is ready."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Firestore Emulator did not become ready. Startup log:"
+          cat "$RUNNER_TEMP/firestore-emulator.log"
+          exit 1
+
+      - name: Run Firestore security rules tests
+        run: node --test ./tests/firestore.rules.test.mjs
+
+      - name: Stop Firestore Emulator
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/firestore-emulator.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/firestore-emulator.pid")" 2>/dev/null || true
+          fi
