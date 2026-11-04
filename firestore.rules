@@ -1,0 +1,517 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function authenticatedEmail() {
+      return request.auth.token.get('email', '');
+    }
+
+    function authenticatedActor() {
+      return request.auth.token.get('email', request.auth.uid);
+    }
+
+    function memberPath(shopId, uid) {
+      return /databases/$(database)/documents/shops/$(shopId)/members/$(uid);
+    }
+
+    function isMember(shopId) {
+      return signedIn() && exists(memberPath(shopId, request.auth.uid));
+    }
+
+    function memberRole(shopId) {
+      return get(memberPath(shopId, request.auth.uid)).data.get('role', '');
+    }
+
+    function isOwner(shopId) {
+      return signedIn() && (
+        shopId == request.auth.uid ||
+        (isMember(shopId) && memberRole(shopId) == 'owner')
+      );
+    }
+
+    function canEdit(shopId) {
+      return signedIn() && (
+        shopId == request.auth.uid ||
+        (isMember(shopId) && memberRole(shopId) in ['owner', 'editor'])
+      );
+    }
+
+    function schemaPath(shopId) {
+      return /databases/$(database)/documents/shops/$(shopId)/meta/schema;
+    }
+
+    function schemaReady(shopId) {
+      return exists(schemaPath(shopId))
+        && get(schemaPath(shopId)).data.version == 2
+        && get(schemaPath(shopId)).data.status == 'ready';
+    }
+
+    function schemaRestoring(shopId) {
+      return exists(schemaPath(shopId))
+        && get(schemaPath(shopId)).data.version == 2
+        && get(schemaPath(shopId)).data.status == 'restoring';
+    }
+
+    // Before cutover or during a full restore, only the owner may inspect normalized collections.
+    function canReadNormalized(shopId) {
+      return isMember(shopId) && (schemaReady(shopId) || isOwner(shopId));
+    }
+
+    // Owner-only legacy import/restore writes. This is never available to editors.
+    function ownerImportWrite(shopId, data) {
+      return isOwner(shopId)
+        && schemaRestoring(shopId)
+        && data.get('legacyImported', false) == true
+        && data.get('migratedByUid', '') == request.auth.uid;
+    }
+
+    function validId(data, id) {
+      return data.id == id && data.id is string && data.id.size() > 0;
+    }
+
+    function validCustomerBase(data, customerId) {
+      return validId(data, customerId)
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 180
+        && data.phone is string
+        && data.phone.size() <= 40
+        && data.createdAt is string
+        && data.activeEntryCount is int
+        && data.activeEntryCount >= 0
+        && data.lastEntryMutationId is string
+        && data.lastEntryMutationKind is string;
+    }
+
+    function validCustomerCreate(shopId, customerId) {
+      let data = request.resource.data;
+      let restoredTrashId = data.get('restoredFromTrashId', '');
+      return validCustomerBase(data, customerId)
+        && data.keys().hasOnly([
+          'id', 'name', 'phone', 'createdAt', 'activeEntryCount',
+          'lastEntryMutationId', 'lastEntryMutationKind', 'createdByUid',
+          'updatedByUid', 'updatedAt', 'legacyImported', 'migratedByUid',
+          'restoredFromTrashId', 'restoredByUid'
+        ])
+        && (
+          ownerImportWrite(shopId, data)
+          || (
+            schemaReady(shopId)
+            && canEdit(shopId)
+            && data.updatedByUid == request.auth.uid
+            && data.activeEntryCount == 0
+            && data.lastEntryMutationId == ''
+            && data.lastEntryMutationKind == ''
+            && (
+              (
+                !data.keys().hasAny(['restoredFromTrashId'])
+                && data.createdByUid == request.auth.uid
+              )
+              || (
+                restoredTrashId is string
+                && restoredTrashId.size() > 0
+                && data.restoredByUid == request.auth.uid
+                && exists(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId))
+                && !existsAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId))
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entityType == 'customer'
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity.id == customerId
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity is map
+                && data.diff(
+                  get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity
+                ).affectedKeys().hasOnly([
+                  'activeEntryCount',
+                  'lastEntryMutationId',
+                  'lastEntryMutationKind',
+                  'updatedByUid',
+                  'updatedAt',
+                  'restoredFromTrashId',
+                  'restoredByUid'
+                ])
+              )
+            )
+          )
+        );
+    }
+
+    function validCustomerCountMutation(shopId, customerId) {
+      let mutationId = request.resource.data.lastEntryMutationId;
+      let mutationKind = request.resource.data.lastEntryMutationKind;
+      let entryPath = /databases/$(database)/documents/shops/$(shopId)/entries/$(mutationId);
+      let beforeCount = resource.data.activeEntryCount;
+      let afterCount = request.resource.data.activeEntryCount;
+      return (
+        mutationKind == 'add'
+        && afterCount == beforeCount + 1
+        && !exists(entryPath)
+        && existsAfter(entryPath)
+        && getAfter(entryPath).data.customerId == customerId
+        && getAfter(entryPath).data.createdByUid == request.auth.uid
+      ) || (
+        mutationKind == 'delete'
+        && beforeCount > 0
+        && afterCount >= 0
+        && afterCount == beforeCount - 1
+        && exists(entryPath)
+        && !existsAfter(entryPath)
+        && get(entryPath).data.customerId == customerId
+      ) || (
+        mutationKind == 'restore'
+        && afterCount == beforeCount + 1
+        && !exists(entryPath)
+        && existsAfter(entryPath)
+        && getAfter(entryPath).data.customerId == customerId
+        && getAfter(entryPath).data.restoredByUid == request.auth.uid
+        && getAfter(entryPath).data.restoredFromTrashId is string
+        && exists(/databases/$(database)/documents/shops/$(shopId)/trash/$(getAfter(entryPath).data.restoredFromTrashId))
+        && !existsAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(getAfter(entryPath).data.restoredFromTrashId))
+      );
+    }
+
+    function validCustomerUpdate(shopId, customerId) {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      return schemaReady(shopId)
+        && canEdit(shopId)
+        && data.activeEntryCount is int
+        && data.activeEntryCount >= 0
+        && data.id == resource.data.id
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 180
+        && data.phone is string
+        && data.phone.size() <= 40
+        && data.updatedByUid == request.auth.uid
+        && changed.hasOnly([
+          'name', 'phone', 'updatedByUid', 'updatedAt',
+          'activeEntryCount', 'lastEntryMutationId', 'lastEntryMutationKind'
+        ])
+        && (
+          (
+            data.activeEntryCount == resource.data.activeEntryCount
+            && data.lastEntryMutationId == resource.data.lastEntryMutationId
+            && data.lastEntryMutationKind == resource.data.lastEntryMutationKind
+          )
+          || validCustomerCountMutation(shopId, customerId)
+        );
+    }
+
+    function trashMatchesDeletedEntity(shopId, entityType, entityId, entityData) {
+      let targetPath = entityType == 'customer'
+        ? /databases/$(database)/documents/shops/$(shopId)/customers/$(entityId)
+        : /databases/$(database)/documents/shops/$(shopId)/entries/$(entityId);
+      return exists(targetPath)
+        && !existsAfter(targetPath)
+        && get(targetPath).data == entityData;
+    }
+
+    function validTrashCreate(shopId, trashId) {
+      let data = request.resource.data;
+      return data.get('entity', {}) is map
+        && data.entityType in ['customer', 'entry']
+        && data.entity.id is string
+        && data.entity.id.size() > 0
+        && data.id == trashId
+        && trashId == (data.entityType + '-' + data.entity.id)
+        && data.deletedBy is string
+        && data.deletedBy == authenticatedActor()
+        && data.deletedByUid == request.auth.uid
+        && data.deletedAt is string
+        && data.expiresAt is string
+        && data.expiresAtTimestamp is timestamp
+        && data.expiresAtTimestamp > request.time
+        && data.keys().hasOnly([
+          'id', 'entityType', 'entity', 'deletedBy', 'deletedByUid',
+          'deletedAt', 'expiresAt', 'expiresAtTimestamp'
+        ])
+        && canEdit(shopId)
+        && schemaReady(shopId)
+        && trashMatchesDeletedEntity(shopId, data.entityType, data.entity.id, data.entity)
+        && (
+          data.entityType != 'customer'
+          || get(/databases/$(database)/documents/shops/$(shopId)/customers/$(data.entity.id)).data.activeEntryCount == 0
+        );
+    }
+
+    function validTrashRestoreTarget(shopId, entityType, entityId, trashId) {
+      let restoredPath = entityType == 'customer'
+        ? /databases/$(database)/documents/shops/$(shopId)/customers/$(entityId)
+        : /databases/$(database)/documents/shops/$(shopId)/entries/$(entityId);
+      return existsAfter(restoredPath)
+        && getAfter(restoredPath).data.id == entityId
+        && getAfter(restoredPath).data.restoredFromTrashId == trashId
+        && getAfter(restoredPath).data.restoredByUid == request.auth.uid;
+    }
+
+    function validTrashRestoreDelete(shopId, trashId) {
+      let data = resource.data;
+      return data.get('entity', {}) is map
+        && data.entityType in ['customer', 'entry']
+        && data.entity.get('id', '') is string
+        && data.entity.get('id', '').size() > 0
+        && data.id == trashId
+        && data.id == (data.entityType + '-' + data.entity.id)
+        && canEdit(shopId)
+        && schemaReady(shopId)
+        && data.expiresAtTimestamp is timestamp
+        && data.expiresAtTimestamp > request.time
+        && validTrashRestoreTarget(shopId, data.entityType, data.entity.id, data.id);
+    }
+
+    function validEntryBase(data, entryId) {
+      return validId(data, entryId)
+        && data.customerId is string
+        && data.kind in ['debt', 'payment']
+        && data.amount is number
+        && data.amount > 0
+        && data.currency in ['USD', 'SYP']
+        && data.note is string
+        && data.actor is string
+        && data.date is string;
+    }
+
+    function validEntryCreate(shopId, entryId) {
+      let data = request.resource.data;
+      let parentPath = /databases/$(database)/documents/shops/$(shopId)/customers/$(data.customerId);
+      let restoredTrashId = data.get('restoredFromTrashId', '');
+      return validEntryBase(data, entryId)
+        && data.keys().hasOnly([
+          'id', 'customerId', 'kind', 'amount', 'currency', 'note', 'actor', 'date',
+          'actorUid', 'createdByUid', 'updatedByUid', 'updatedAt',
+          'legacyImported', 'migratedByUid', 'restoredFromTrashId', 'restoredByUid'
+        ])
+        && (
+          ownerImportWrite(shopId, data)
+          || (
+            schemaReady(shopId)
+            && canEdit(shopId)
+            && exists(parentPath)
+            && data.updatedByUid == request.auth.uid
+            && getAfter(parentPath).data.lastEntryMutationId == entryId
+            && (
+              (
+                !data.keys().hasAny(['restoredFromTrashId'])
+                && data.createdByUid == request.auth.uid
+                && data.actorUid == request.auth.uid
+                && data.actor == authenticatedActor()
+                && getAfter(parentPath).data.lastEntryMutationKind == 'add'
+              )
+              || (
+                restoredTrashId is string
+                && restoredTrashId.size() > 0
+                && data.restoredByUid == request.auth.uid
+                && getAfter(parentPath).data.lastEntryMutationKind == 'restore'
+                && exists(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId))
+                && !existsAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId))
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entityType == 'entry'
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity.id == entryId
+                && get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity is map
+                && data.diff(get(/databases/$(database)/documents/shops/$(shopId)/trash/$(restoredTrashId)).data.entity).affectedKeys().hasOnly([
+                  'updatedByUid', 'restoredFromTrashId', 'restoredByUid'
+                ])
+              )
+            )
+          )
+        );
+    }
+
+    function validEntryUpdate(shopId, entryId) {
+      let data = request.resource.data;
+      return schemaReady(shopId)
+        && canEdit(shopId)
+        && validEntryBase(data, entryId)
+        && data.id == resource.data.id
+        && data.customerId == resource.data.customerId
+        && data.actorUid == resource.data.actorUid
+        && data.createdByUid == resource.data.createdByUid
+        && data.actor == resource.data.actor
+        && data.date == resource.data.date
+        && data.updatedByUid == request.auth.uid
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'kind', 'amount', 'currency', 'note', 'updatedByUid', 'updatedAt'
+        ]);
+    }
+
+    function validEntryDelete(shopId, entryId) {
+      let parentPath = /databases/$(database)/documents/shops/$(shopId)/customers/$(resource.data.customerId);
+      let trashPath = /databases/$(database)/documents/shops/$(shopId)/trash/$(('entry-' + entryId));
+      return schemaReady(shopId)
+        && canEdit(shopId)
+        && exists(parentPath)
+        && getAfter(parentPath).data.activeEntryCount == get(parentPath).data.activeEntryCount - 1
+        && getAfter(parentPath).data.lastEntryMutationId == entryId
+        && getAfter(parentPath).data.lastEntryMutationKind == 'delete'
+        && existsAfter(trashPath)
+        && getAfter(trashPath).data.entityType == 'entry'
+        && getAfter(trashPath).data.entity == resource.data
+        && getAfter(trashPath).data.deletedByUid == request.auth.uid;
+    }
+
+    match /shops/{shopId}/members/{memberId} {
+      allow get: if signedIn() && (request.auth.uid == memberId || isOwner(shopId));
+      allow list: if isOwner(shopId);
+
+      // New accounts can create only their own private-shop membership.
+      // Shared-shop membership is provisioned by an existing owner.
+      allow create: if signedIn() && (
+        (
+          shopId == request.auth.uid
+          && memberId == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'email', 'createdAt'])
+          && request.resource.data.keys().hasAll(['uid', 'createdAt'])
+          && request.resource.data.createdAt is string
+          && request.resource.data.get('email', '') is string
+        )
+        || (
+          isOwner(shopId)
+          && memberId != request.auth.uid
+          && request.resource.data.uid == memberId
+          && request.resource.data.role in ['editor', 'viewer']
+          && request.resource.data.keys().hasOnly(['uid', 'email', 'createdAt', 'role'])
+          && request.resource.data.keys().hasAll(['uid', 'role', 'createdAt'])
+          && request.resource.data.createdAt is string
+          && request.resource.data.get('email', '') is string
+        )
+      );
+
+      allow update: if isOwner(shopId)
+        && memberId != request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role in ['editor', 'viewer'];
+
+      allow delete: if isOwner(shopId)
+        && memberId != request.auth.uid
+        && resource.data.role in ['editor', 'viewer'];
+    }
+
+    match /shops/{shopId}/meta/{metaId} {
+      allow read: if isMember(shopId);
+      allow create: if isOwner(shopId)
+        && metaId == 'schema'
+        && request.resource.data.version == 2
+        && request.resource.data.status in ['restoring', 'ready']
+        && request.resource.data.get(
+          'migratingByUid',
+          request.resource.data.get(
+            'initializedByUid',
+            request.resource.data.get('migratedByUid', request.resource.data.get('restoredByUid', ''))
+          )
+        ) == request.auth.uid;
+      allow update: if isOwner(shopId)
+        && metaId == 'schema'
+        && request.resource.data.version == 2
+        && request.resource.data.status in ['restoring', 'ready'];
+      allow delete: if false;
+    }
+
+    match /shops/{shopId}/customers/{customerId} {
+      allow read: if canReadNormalized(shopId);
+      allow create: if validCustomerCreate(shopId, customerId);
+      allow update: if (
+        validCustomerUpdate(shopId, customerId)
+        || ownerImportWrite(shopId, request.resource.data)
+      );
+      allow delete: if (
+          isOwner(shopId) && schemaRestoring(shopId)
+        ) || (
+          schemaReady(shopId)
+          && canEdit(shopId)
+          && resource.data.activeEntryCount == 0
+          && existsAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(('customer-' + customerId)))
+          && getAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(('customer-' + customerId))).data.entityType == 'customer'
+          && getAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(('customer-' + customerId))).data.entity == resource.data
+          && getAfter(/databases/$(database)/documents/shops/$(shopId)/trash/$(('customer-' + customerId))).data.deletedByUid == request.auth.uid
+        );
+    }
+
+    match /shops/{shopId}/entries/{entryId} {
+      allow read: if canReadNormalized(shopId);
+      allow create: if validEntryCreate(shopId, entryId);
+      allow update: if validEntryUpdate(shopId, entryId) || ownerImportWrite(shopId, request.resource.data);
+      allow delete: if (isOwner(shopId) && schemaRestoring(shopId)) || validEntryDelete(shopId, entryId);
+    }
+
+    match /shops/{shopId}/activity/{activityId} {
+      allow read: if canReadNormalized(shopId);
+      allow create: if (
+        ownerImportWrite(shopId, request.resource.data)
+        || (
+          schemaReady(shopId)
+          && canEdit(shopId)
+          && request.resource.data.keys().hasOnly([
+            'id', 'type', 'action', 'description', 'actor', 'actorEmail',
+            'actorUid', 'createdAt', 'details', 'customerName'
+          ])
+          && request.resource.data.id == activityId
+          && request.resource.data.type == 'activity'
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.actorEmail == authenticatedEmail()
+          && request.resource.data.actor == authenticatedActor()
+          && request.resource.data.action is string
+          && request.resource.data.description is string
+          && request.resource.data.actor is string
+          && request.resource.data.createdAt is string
+          && request.resource.data.get('details', '') is string
+          && request.resource.data.get('customerName', '') is string
+        )
+      );
+      // Activity records are append-only after creation. Backup/import is owner-only.
+      allow update: if ownerImportWrite(shopId, request.resource.data);
+      allow delete: if isOwner(shopId) && (schemaReady(shopId) || schemaRestoring(shopId));
+    }
+
+    match /shops/{shopId}/trash/{trashId} {
+      allow read: if canReadNormalized(shopId);
+      allow create: if (
+        ownerImportWrite(shopId, request.resource.data)
+        || validTrashCreate(shopId, trashId)
+      );
+      allow update: if ownerImportWrite(shopId, request.resource.data);
+      allow delete: if (isOwner(shopId) && schemaRestoring(shopId))
+        || validTrashRestoreDelete(shopId, trashId)
+        || (
+          isOwner(shopId)
+          && schemaReady(shopId)
+          && resource.data.expiresAtTimestamp is timestamp
+          && resource.data.expiresAtTimestamp <= request.time
+        );
+    }
+
+    match /shops/{shopId}/operations/{operationId} {
+      allow read: if canReadNormalized(shopId);
+      allow create: if (
+        ownerImportWrite(shopId, request.resource.data)
+        || (
+          schemaReady(shopId)
+          && canEdit(shopId)
+          && request.resource.data.keys().hasOnly(['id', 'type', 'appliedAt', 'appliedBy', 'trashId'])
+          && request.resource.data.keys().hasAll(['id', 'type', 'appliedAt', 'appliedBy'])
+          && request.resource.data.id == operationId
+          && request.resource.data.appliedBy == request.auth.uid
+          && request.resource.data.type in ['entity-update', 'trash-restore']
+          && request.resource.data.appliedAt is string
+          && request.resource.data.get('trashId', '') is string
+        )
+      );
+      // Operations are immutable after creation; only owner imports may replace them.
+      allow update: if ownerImportWrite(shopId, request.resource.data);
+      allow delete: if isOwner(shopId) && (schemaReady(shopId) || schemaRestoring(shopId));
+    }
+
+    // Old array documents remain readable only while migration is pending.
+    // The new client never writes to this legacy path.
+    match /shops/{shopId}/data/{legacyDocumentId} {
+      allow read: if isMember(shopId) && (!schemaReady(shopId) || isOwner(shopId));
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

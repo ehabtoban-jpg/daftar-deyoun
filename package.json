@@ -1,0 +1,32 @@
+{
+    "name": "daftar-deyoun",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host 0.0.0.0",
+        "build": "tsc -b && vite build",
+        "preview": "vite preview --host 0.0.0.0"
+    },
+    "dependencies": {
+        "firebase": "^11.10.0",
+        "html2pdf.js": "^0.14.0",
+        "jspdf": "^4.2.1",
+        "lucide-react": "^0.468.0",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1"
+    },
+    "devDependencies": {
+        "@firebase/rules-unit-testing": "^4.0.1",
+        "@types/react": "^18.3.18",
+        "@types/react-dom": "^18.3.5",
+        "@vitejs/plugin-react": "^4.3.4",
+        "typescript": "^5.7.3",
+        "vite": "^6.0.7"
+    },
+    "overrides": {
+        "@firebase/firestore": {
+            "@grpc/grpc-js": "1.14.5"
+        }
+    }
+}
